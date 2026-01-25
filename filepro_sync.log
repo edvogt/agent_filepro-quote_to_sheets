@@ -1,0 +1,86 @@
+2026-01-24 14:46:18,207 - FilePro-Sync - INFO - ============================================================
+2026-01-24 14:46:18,207 - FilePro-Sync - INFO - FilePro to Google Sheets Sync - Starting
+2026-01-24 14:46:18,207 - FilePro-Sync - INFO - ============================================================
+2026-01-24 14:46:18,207 - FilePro-Sync - ERROR - Service account file not found: /home/filepro/credentials/service-account-key.json
+2026-01-24 14:48:28,589 - FilePro-Sync - INFO - ============================================================
+2026-01-24 14:48:28,589 - FilePro-Sync - INFO - FilePro to Google Sheets Sync - Starting
+2026-01-24 14:48:28,589 - FilePro-Sync - INFO - ============================================================
+2026-01-24 14:48:28,589 - FilePro-Sync - ERROR - Service account file not found: /home/filepro/credentials/service-account-key.json
+2026-01-24 14:49:31,357 - FilePro-Sync - INFO - ============================================================
+2026-01-24 14:49:31,358 - FilePro-Sync - INFO - FilePro to Google Sheets Sync - Starting
+2026-01-24 14:49:31,358 - FilePro-Sync - INFO - ============================================================
+2026-01-24 14:49:31,402 - FilePro-Sync - INFO - Google Sheets client initialized successfully
+2026-01-24 14:49:31,402 - FilePro-Sync - INFO - Checking for existing files in /home/filepro/exports/quotations
+2026-01-24 14:49:31,402 - FilePro-Sync - INFO - Processing file: /home/filepro/exports/quotations/QUOTE_10001_20260124_103000.json
+2026-01-24 14:49:31,409 - FilePro-Sync - INFO - Loaded 4 rows for quote 10001
+2026-01-24 14:49:31,701 - FilePro-Sync - INFO - Creating new sheet: Quote 10001
+2026-01-24 14:49:31,844 - FilePro-Sync - ERROR - Error creating/updating sheet 10001: APIError: [404]: File not found: 1jnWNqdSBy8aigv2c_MclEtv4r-HJvsmB.
+2026-01-24 14:49:31,846 - FilePro-Sync - INFO - Monitoring directory: /home/filepro/exports/quotations
+2026-01-24 14:49:31,846 - FilePro-Sync - INFO - Press Ctrl+C to stop
+2026-01-24 14:52:37,991 - FilePro-Sync - INFO - ============================================================
+2026-01-24 14:52:37,991 - FilePro-Sync - INFO - FilePro to Google Sheets Sync - Starting
+2026-01-24 14:52:37,991 - FilePro-Sync - INFO - ============================================================
+2026-01-24 14:52:38,034 - FilePro-Sync - INFO - Google Sheets client initialized successfully
+2026-01-24 14:52:38,035 - FilePro-Sync - INFO - Checking for existing files in /home/filepro/exports/quotations
+2026-01-24 14:52:38,035 - FilePro-Sync - INFO - Processing file: /home/filepro/exports/quotations/QUOTE_10001_20260124_103000.json
+2026-01-24 14:52:38,042 - FilePro-Sync - INFO - Loaded 4 rows for quote 10001
+2026-01-24 14:52:38,300 - FilePro-Sync - INFO - Creating new sheet: Quote 10001
+2026-01-24 14:52:38,436 - FilePro-Sync - ERROR - Error creating/updating sheet 10001: APIError: [404]: File not found: 1jnWNqdSBy8aigv2c_MclEtv4r-HJvsmB.
+2026-01-24 14:52:38,438 - FilePro-Sync - INFO - Monitoring directory: /home/filepro/exports/quotations
+2026-01-24 14:52:38,438 - FilePro-Sync - INFO - Press Ctrl+C to stop
+2026-01-24 14:56:58,960 - FilePro-Sync - INFO - ============================================================
+2026-01-24 14:56:58,961 - FilePro-Sync - INFO - FilePro to Google Sheets Sync - Starting
+2026-01-24 14:56:58,961 - FilePro-Sync - INFO - ============================================================
+2026-01-24 14:56:59,004 - FilePro-Sync - INFO - Google Sheets client initialized successfully
+2026-01-24 14:56:59,004 - FilePro-Sync - INFO - Checking for existing files in /home/filepro/exports/quotations
+2026-01-24 14:56:59,004 - FilePro-Sync - INFO - Processing file: /home/filepro/exports/quotations/QUOTE_10001_20260124_103000.json
+2026-01-24 14:56:59,010 - FilePro-Sync - INFO - Loaded 4 rows for quote 10001
+2026-01-24 14:56:59,457 - FilePro-Sync - INFO - Creating new sheet: Quote 10001
+2026-01-24 14:57:00,149 - FilePro-Sync - ERROR - Error creating/updating sheet 10001: APIError: [403]: The user's Drive storage quota has been exceeded.
+2026-01-24 14:57:00,152 - FilePro-Sync - INFO - Monitoring directory: /home/filepro/exports/quotations
+2026-01-24 14:57:00,152 - FilePro-Sync - INFO - Press Ctrl+C to stop
+2026-01-24 15:08:15,897 - FilePro-Sync - INFO - ============================================================
+2026-01-24 15:08:15,898 - FilePro-Sync - INFO - FilePro to Google Sheets Sync - Starting
+2026-01-24 15:08:15,898 - FilePro-Sync - INFO - ============================================================
+2026-01-24 15:08:15,941 - FilePro-Sync - INFO - Google Sheets client initialized successfully
+2026-01-24 15:08:15,941 - FilePro-Sync - INFO - Checking for existing files in /home/filepro/exports/quotations
+2026-01-24 15:08:15,941 - FilePro-Sync - INFO - Processing file: /home/filepro/exports/quotations/QUOTE_10001_20260124_103000.json
+2026-01-24 15:08:15,948 - FilePro-Sync - INFO - Loaded 4 rows for quote 10001
+2026-01-24 15:08:16,470 - FilePro-Sync - INFO - Creating new sheet: Quote 10001
+2026-01-24 15:08:17,065 - FilePro-Sync - ERROR - Error creating/updating sheet 10001: APIError: [403]: The user's Drive storage quota has been exceeded.
+2026-01-24 15:08:17,067 - FilePro-Sync - INFO - Monitoring directory: /home/filepro/exports/quotations
+2026-01-24 15:08:17,067 - FilePro-Sync - INFO - Press Ctrl+C to stop
+2026-01-24 19:02:13,271 - FilePro-Sync - INFO - ============================================================
+2026-01-24 19:02:13,271 - FilePro-Sync - INFO - FilePro to Google Sheets Sync - Starting
+2026-01-24 19:02:13,271 - FilePro-Sync - INFO - ============================================================
+2026-01-24 19:02:13,272 - FilePro-Sync - INFO - Google Sheets client initialized successfully
+2026-01-24 19:02:13,272 - FilePro-Sync - INFO - Checking for existing files in /home/filepro/exports/quotations
+2026-01-24 19:02:13,272 - FilePro-Sync - INFO - Processing file: /home/filepro/exports/quotations/QUOTE_10001_20260124_103000.json
+2026-01-24 19:02:13,278 - FilePro-Sync - INFO - Loaded 4 rows for quote 10001
+2026-01-24 19:02:13,609 - FilePro-Sync - INFO - Creating new sheet: Quote 10001
+2026-01-24 19:02:16,569 - FilePro-Sync - ERROR - Error creating/updating sheet 10001: APIError: [400]: Range (Sheet1!A1009) exceeds grid limits. Max rows: 1000, max columns: 26
+2026-01-24 19:02:16,570 - FilePro-Sync - INFO - Monitoring directory: /home/filepro/exports/quotations
+2026-01-24 19:02:16,570 - FilePro-Sync - INFO - Press Ctrl+C to stop
+2026-01-24 19:03:53,310 - FilePro-Sync - INFO - ============================================================
+2026-01-24 19:03:53,310 - FilePro-Sync - INFO - FilePro to Google Sheets Sync - Starting
+2026-01-24 19:03:53,310 - FilePro-Sync - INFO - ============================================================
+2026-01-24 19:03:53,311 - FilePro-Sync - INFO - Google Sheets client initialized successfully
+2026-01-24 19:03:53,311 - FilePro-Sync - INFO - Checking for existing files in /home/filepro/exports/quotations
+2026-01-24 19:03:53,311 - FilePro-Sync - INFO - Processing file: /home/filepro/exports/quotations/QUOTE_10001_20260124_103000.json
+2026-01-24 19:03:53,318 - FilePro-Sync - INFO - Loaded 4 rows for quote 10001
+2026-01-24 19:03:53,921 - FilePro-Sync - INFO - Updating existing sheet: Quote 10001
+2026-01-24 19:03:54,186 - FilePro-Sync - ERROR - Error creating/updating sheet 10001: Object of type int64 is not JSON serializable
+2026-01-24 19:03:54,188 - FilePro-Sync - INFO - Monitoring directory: /home/filepro/exports/quotations
+2026-01-24 19:03:54,188 - FilePro-Sync - INFO - Press Ctrl+C to stop
+2026-01-24 19:04:28,825 - FilePro-Sync - INFO - ============================================================
+2026-01-24 19:04:28,825 - FilePro-Sync - INFO - FilePro to Google Sheets Sync - Starting
+2026-01-24 19:04:28,825 - FilePro-Sync - INFO - ============================================================
+2026-01-24 19:04:28,825 - FilePro-Sync - INFO - Google Sheets client initialized successfully
+2026-01-24 19:04:28,825 - FilePro-Sync - INFO - Checking for existing files in /home/filepro/exports/quotations
+2026-01-24 19:04:28,826 - FilePro-Sync - INFO - Processing file: /home/filepro/exports/quotations/QUOTE_10001_20260124_103000.json
+2026-01-24 19:04:28,831 - FilePro-Sync - INFO - Loaded 4 rows for quote 10001
+2026-01-24 19:04:29,281 - FilePro-Sync - INFO - Updating existing sheet: Quote 10001
+2026-01-24 19:04:30,476 - FilePro-Sync - INFO - Successfully synced quotation 10001
+2026-01-24 19:04:30,476 - FilePro-Sync - INFO - Archived file to /home/filepro/exports/archive/2026-01/QUOTE_10001_20260124_103000.json
+2026-01-24 19:04:30,478 - FilePro-Sync - INFO - Monitoring directory: /home/filepro/exports/quotations
+2026-01-24 19:04:30,478 - FilePro-Sync - INFO - Press Ctrl+C to stop
