@@ -20,6 +20,8 @@ import time
 import json
 import logging
 import pickle
+import urllib.request
+import urllib.error
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -53,7 +55,11 @@ CONFIG = {
     
     # Logging
     'log_file': 'filepro_sync.log',
-    'log_level': 'INFO'
+    'log_level': 'INFO',
+
+    # Webhook (Google Apps Script Web App URL)
+    'webhook_url': None,  # Set to your deployed Apps Script URL
+    'webhook_timeout': 30  # seconds
 }
 
 # ============================================================================
@@ -109,42 +115,43 @@ class GoogleSheetsClient:
             logger.error(f"Error searching for sheet {quote_number}: {e}")
             return None
     
-    def create_or_update_sheet(self, quote_number: str, data: pd.DataFrame) -> bool:
-        """Create new sheet or update existing one"""
+    def create_or_update_sheet(self, quote_number: str, data: pd.DataFrame) -> tuple:
+        """Create new sheet or update existing one. Returns (success, sheet_url)"""
         try:
             sheet_name = f"{CONFIG['sheet_prefix']} {quote_number}"
-            
+
             # Check if sheet exists
             existing_sheet = self.find_sheet_by_quote_number(quote_number)
-            
+
             if existing_sheet:
                 logger.info(f"Updating existing sheet: {sheet_name}")
                 worksheet = existing_sheet.sheet1
-                
+                spreadsheet = existing_sheet
+
                 # Clear existing content
                 worksheet.clear()
             else:
                 logger.info(f"Creating new sheet: {sheet_name}")
-                
+
                 # Create new spreadsheet
                 spreadsheet = self.client.create(
                     sheet_name,
                     folder_id=self.folder_id
                 )
                 worksheet = spreadsheet.sheet1
-            
+
             # Write data to sheet
             self._populate_worksheet(worksheet, quote_number, data)
-            
+
             # Apply formatting
             self._apply_formatting(worksheet)
-            
+
             logger.info(f"Successfully synced quotation {quote_number}")
-            return True
-            
+            return True, spreadsheet.url
+
         except Exception as e:
             logger.error(f"Error creating/updating sheet {quote_number}: {e}")
-            return False
+            return False, None
     
     def _populate_worksheet(self, worksheet: gspread.Worksheet,
                            quote_number: str, data: pd.DataFrame):
@@ -200,6 +207,42 @@ class GoogleSheetsClient:
             logger.warning(f"Error applying formatting: {e}")
 
 # ============================================================================
+# WEBHOOK CALLER
+# ============================================================================
+def call_webhook(quote_number: str, sheet_url: str) -> bool:
+    """Call Apps Script webhook after successful sync"""
+    if not CONFIG.get('webhook_url'):
+        return True  # No webhook configured, skip
+
+    try:
+        payload = json.dumps({
+            'quote_number': quote_number,
+            'sheet_url': sheet_url,
+            'timestamp': datetime.now().isoformat()
+        }).encode('utf-8')
+
+        req = urllib.request.Request(
+            CONFIG['webhook_url'],
+            data=payload,
+            headers={'Content-Type': 'application/json'},
+            method='POST'
+        )
+
+        with urllib.request.urlopen(req, timeout=CONFIG['webhook_timeout']) as response:
+            logger.info(f"Webhook called successfully for quote {quote_number}")
+            return True
+
+    except urllib.error.HTTPError as e:
+        logger.error(f"Webhook HTTP error for quote {quote_number}: {e.code} {e.reason}")
+        return False
+    except urllib.error.URLError as e:
+        logger.error(f"Webhook URL error for quote {quote_number}: {e.reason}")
+        return False
+    except Exception as e:
+        logger.error(f"Webhook error for quote {quote_number}: {e}")
+        return False
+
+# ============================================================================
 # FILE PROCESSOR
 # ============================================================================
 class QuotationProcessor:
@@ -225,17 +268,21 @@ class QuotationProcessor:
             
             # Clean and validate data
             data = self._clean_data(data)
-            
+
             # Sync to Google Sheets
-            success = self.sheets_client.create_or_update_sheet(
-                quote_number, 
+            success, sheet_url = self.sheets_client.create_or_update_sheet(
+                quote_number,
                 data
             )
-            
+
+            # Call webhook if configured
+            if success and sheet_url:
+                call_webhook(quote_number, sheet_url)
+
             # Archive file if successful
             if success and CONFIG['archive_processed']:
                 self._archive_file(file_path)
-            
+
             return success
             
         except Exception as e:
