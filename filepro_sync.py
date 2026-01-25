@@ -115,7 +115,7 @@ class GoogleSheetsClient:
             logger.error(f"Error searching for sheet {quote_number}: {e}")
             return None
     
-    def create_or_update_sheet(self, quote_number: str, data: pd.DataFrame) -> tuple:
+    def create_or_update_sheet(self, quote_number: str, data: pd.DataFrame, metadata: dict = None) -> tuple:
         """Create new sheet or update existing one. Returns (success, sheet_url)"""
         try:
             sheet_name = f"{CONFIG['sheet_prefix']} {quote_number}"
@@ -141,7 +141,7 @@ class GoogleSheetsClient:
                 worksheet = spreadsheet.sheet1
 
             # Write data to sheet
-            self._populate_worksheet(worksheet, quote_number, data)
+            self._populate_worksheet(worksheet, quote_number, data, metadata)
 
             # Apply formatting
             self._apply_formatting(worksheet)
@@ -154,31 +154,58 @@ class GoogleSheetsClient:
             return False, None
     
     def _populate_worksheet(self, worksheet: gspread.Worksheet,
-                           quote_number: str, data: pd.DataFrame):
+                           quote_number: str, data: pd.DataFrame, metadata: dict = None):
         """Populate worksheet with quotation data"""
 
-        # Build all rows at once
-        all_rows = [
-            ["QUOTATION", f"#{quote_number}"],
-            ["Date", datetime.now().strftime("%Y-%m-%d")],
-            ["", ""],  # Blank row
-            data.columns.tolist()  # Column headers
-        ]
+        all_rows = []
+
+        # Add header info from metadata if available
+        if metadata and metadata.get('quote_info'):
+            qi = metadata['quote_info']
+            all_rows.append(["QUOTATION", f"#{qi.get('quote_number', quote_number)}"])
+            all_rows.append(["Date", qi.get('date', datetime.now().strftime("%Y-%m-%d"))])
+            all_rows.append(["PO Reference", qi.get('purchase_order_ref', '')])
+            all_rows.append(["Terms", qi.get('terms', '')])
+            all_rows.append(["Ship Via", qi.get('ship_via', '')])
+        else:
+            all_rows.append(["QUOTATION", f"#{quote_number}"])
+            all_rows.append(["Date", datetime.now().strftime("%Y-%m-%d")])
+
+        # Add customer info if available
+        if metadata and metadata.get('customer'):
+            cust = metadata['customer']
+            bill_to = cust.get('bill_to', {})
+            all_rows.append(["", ""])
+            all_rows.append(["BILL TO", bill_to.get('name', '')])
+            all_rows.append(["", bill_to.get('organization', '')])
+            all_rows.append(["", bill_to.get('address', '')])
+
+        all_rows.append(["", ""])  # Blank row
+        all_rows.append(data.columns.tolist())  # Column headers
 
         # Add data rows (convert numpy types to native Python)
         for _, row in data.iterrows():
             all_rows.append([float(v) if pd.notna(v) and isinstance(v, (int, float)) else (str(v) if pd.notna(v) else "") for v in row.tolist()])
 
-        # Add totals section if numeric columns exist
-        numeric_cols = data.select_dtypes(include=['number']).columns
-        if len(numeric_cols) > 0:
-            all_rows.append([""])  # Blank row
-            for col in numeric_cols:
-                total = float(data[col].sum())  # Convert to native Python float
-                all_rows.append([f"Total {col}", total])
+        # Add financial summary if available
+        if metadata and metadata.get('financial_summary'):
+            fs = metadata['financial_summary']
+            all_rows.append([""])
+            all_rows.append(["Sub Total", float(fs.get('sub_total', 0))])
+            all_rows.append(["Tax", float(fs.get('tax_amount', 0))])
+            all_rows.append(["Shipping", float(fs.get('shipping', 0))])
+            all_rows.append(["TOTAL", float(fs.get('total_amount', 0))])
+        else:
+            # Add totals section if numeric columns exist
+            numeric_cols = data.select_dtypes(include=['number']).columns
+            if len(numeric_cols) > 0:
+                all_rows.append([""])  # Blank row
+                for col in numeric_cols:
+                    total = float(data[col].sum())
+                    all_rows.append([f"Total {col}", total])
 
         # Batch update all rows at once
-        worksheet.update(f'A1:Z{len(all_rows)}', all_rows)
+        worksheet.update(all_rows, f'A1:Z{len(all_rows)}')
     
     def _apply_formatting(self, worksheet: gspread.Worksheet):
         """Apply professional formatting to worksheet"""
@@ -247,9 +274,10 @@ def call_webhook(quote_number: str, sheet_url: str) -> bool:
 # ============================================================================
 class QuotationProcessor:
     """Processes FilePro quotation exports"""
-    
+
     def __init__(self, sheets_client: GoogleSheetsClient):
         self.sheets_client = sheets_client
+        self._quote_metadata = None
     
     def process_file(self, file_path: Path) -> bool:
         """Process a single quotation file"""
@@ -263,7 +291,24 @@ class QuotationProcessor:
                 return False
             
             # Read JSON data
-            data = pd.read_json(file_path)
+            with open(file_path, 'r') as f:
+                json_data = json.load(f)
+
+            # Handle nested JSON structure (FilePro format)
+            if isinstance(json_data, dict) and 'line_items' in json_data:
+                data = pd.DataFrame(json_data['line_items'])
+                # Store metadata for sheet header
+                self._quote_metadata = {
+                    'quote_info': json_data.get('quote_info', {}),
+                    'vendor': json_data.get('vendor', {}),
+                    'customer': json_data.get('customer', {}),
+                    'financial_summary': json_data.get('financial_summary', {})
+                }
+            else:
+                # Flat array format
+                data = pd.DataFrame(json_data) if isinstance(json_data, list) else pd.read_json(file_path)
+                self._quote_metadata = None
+
             logger.info(f"Loaded {len(data)} rows for quote {quote_number}")
             
             # Clean and validate data
@@ -272,7 +317,8 @@ class QuotationProcessor:
             # Sync to Google Sheets
             success, sheet_url = self.sheets_client.create_or_update_sheet(
                 quote_number,
-                data
+                data,
+                metadata=self._quote_metadata
             )
 
             # Call webhook if configured
