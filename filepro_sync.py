@@ -2,6 +2,7 @@
 """
 FilePro to Google Sheets Sync Script
 =====================================
+Version: 1.0.1
 This script monitors a directory for FilePro quotation exports and 
 automatically syncs them to Google Sheets.
 
@@ -41,7 +42,8 @@ CONFIG = {
     'google_drive_folder_id': '1jnWNqdSBy8aigv2c_MclEtv4r-HJvsmB',
     
     # FilePro Export Settings
-    'export_directory': '/home/filepro/exports/quotations',
+    # $SPOOL = /appl/spool
+    'export_directory': '/appl/spool/QUOTES-SHEETS',
     'file_pattern': 'QUOTE_*.json',
 
     # Sync Settings
@@ -321,8 +323,10 @@ class QuotationProcessor:
                 metadata=self._quote_metadata
             )
 
-            # Call webhook if configured
+            # Display the sheet URL on successful sync
             if success and sheet_url:
+                logger.info(f"Sheet URL: {sheet_url}")
+                # Call webhook if configured
                 call_webhook(quote_number, sheet_url)
 
             # Archive file if successful
