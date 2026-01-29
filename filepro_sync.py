@@ -40,7 +40,7 @@ from watchdog.events import FileSystemEventHandler
 CONFIG = {
     # Google Authentication (OAuth)
     'token_file': '/home/filepro/credentials/token.pickle',
-    'google_drive_folder_id': '1jnWNqdSBy8aigv2c_MclEtv4r-HJvsmB',
+    'google_drive_folder_id': '1SG2iyJ1ej_MUyu4WEJyImWG8iz78A-j0',  # CLIENT-QUOTES folder
     
     # FilePro Export Settings
     # $SPOOL = /appl/spool
