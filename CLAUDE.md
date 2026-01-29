@@ -4,37 +4,63 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is a Python application that monitors a directory for FilePro accounting system quotation exports (JSON files) and automatically syncs them to Google Sheets. It runs as a background service on Ubuntu, watching for new JSON exports and creating/updating corresponding Google Sheets.
+Python application that monitors a directory for FilePro accounting system quotation exports (JSON) and automatically syncs them to Google Sheets. Runs as a background service on Ubuntu using watchdog for filesystem monitoring.
 
 ## Key Commands
 
 ```bash
 # Install dependencies
-pip install --user gspread google-auth watchdog pandas
+pip install --user gspread google-auth google-auth-oauthlib watchdog pandas
+
+# First-time OAuth setup (interactive - requires browser)
+python setup_oauth.py
 
 # Run the sync service
 python filepro_sync.py
+
+# Test Google Sheets API connection (uses service account, not OAuth)
+python test_sheets.py
 ```
 
 ## Architecture
 
-The application consists of three main components in `filepro_sync.py`:
+**Data flow**: FilePro exports JSON → Watchdog detects file → QuotationProcessor parses → GoogleSheetsClient creates/updates Sheet → Webhook called (optional) → File archived
 
-1. **GoogleSheetsClient** (line 74): Handles Google API authentication and all Sheets operations (create, update, find, format)
-2. **QuotationProcessor** (line 213): Parses JSON files, extracts quote numbers from filenames, cleans data, and coordinates syncing
-3. **QuotationFileHandler** (line 306): Watchdog event handler that monitors the export directory for new JSON files
+Three main components in `filepro_sync.py`:
 
-**Data flow**: FilePro exports JSON -> Watchdog detects new file -> Processor parses JSON -> GoogleSheetsClient creates/updates Sheet -> File archived
+1. **GoogleSheetsClient** (line 83): OAuth token loading/refresh, Sheets CRUD operations, formatting. Uses `gspread` library.
+2. **QuotationProcessor** (line 277): JSON parsing, quote number extraction from filename, data cleaning with pandas, coordinates sync workflow.
+3. **QuotationFileHandler** (line 395): Watchdog `FileSystemEventHandler` subclass. Monitors export directory, debounces file creation events (2-second delay), prevents duplicate processing.
+
+Supporting files:
+- `setup_oauth.py`: One-time OAuth flow generating `/home/filepro/credentials/token.pickle`
+- `test_sheets.py`: Diagnostic script using service account auth (different auth path than main app)
+- `call_webhook()` (line 241): POST to Apps Script after successful sync
 
 ## Configuration
 
-All settings are in the `CONFIG` dictionary at the top of `filepro_sync.py` (line 35). Key settings:
-- `service_account_file`: Path to Google service account JSON credentials
-- `google_drive_folder_id`: Target Google Drive folder ID
-- `export_directory`: Directory to watch for JSON exports
-- `file_pattern`: Expected filename pattern (default: `QUOTE_*.json`)
+`CONFIG` dict at `filepro_sync.py:39`:
+- `token_file`: OAuth token pickle path (default: `/home/filepro/credentials/token.pickle`)
+- `google_drive_folder_id`: Target Drive folder ID
+- `export_directory`: Watch directory (default: `/appl/spool/QUOTES-SHEETS`)
+- `file_pattern`: Glob pattern (default: `QUOTE_*.json`)
+- `archive_directory`: Where processed files move (default: `/home/filepro/exports/archive`)
+- `webhook_url`: Optional Apps Script URL for notifications
 
-## Expected JSON Format
+## JSON Format
 
-- Filename: `QUOTE_[NUMBER]_[TIMESTAMP].json` (e.g., `QUOTE_12345_20250124_143022.json`)
-- Quote number is extracted from the second underscore-delimited segment of the filename
+Filename pattern: `QUOTE_[NUMBER]_[TIMESTAMP].json` (e.g., `QUOTE_12345_20250124_143022.json`) - quote number extracted from second underscore segment.
+
+**Nested format** (code expects `line_items` key):
+```json
+{
+  "line_items": [...],
+  "quote_info": {...},
+  "customer": {...},
+  "financial_summary": {...}
+}
+```
+
+**Flat format**: Simple array of line item objects.
+
+**Note**: Actual FilePro exports use different structure with `meta`, `invoiced_to`, `ship_to`, `quote_details`, `entry_details`, and `totals` sections - the processor may need updates to handle this format.
