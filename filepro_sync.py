@@ -447,16 +447,48 @@ class QuotationProcessor:
                 json_valid = False
                 json_data = None
 
+            # Check if this is a trigger file pointing to actual quote data
+            if json_valid and isinstance(json_data, dict) and 'html_path' in json_data:
+                actual_path = Path(json_data['html_path'])
+                logger.info(f"Trigger file detected, reading actual quote from: {actual_path}")
+
+                if not actual_path.exists():
+                    logger.error(f"Actual quote file not found: {actual_path}")
+                    return False
+
+                # Update quote number from trigger file if available
+                if json_data.get('quote_number'):
+                    quote_number = json_data['quote_number']
+
+                # Read the actual quote file
+                try:
+                    with open(actual_path, 'r') as f:
+                        json_data = json.load(f)
+                    json_valid = True
+                except json.JSONDecodeError:
+                    json_valid = False
+                    # Will try FilePro parser below
+                    file_path = actual_path
+
             # Handle different JSON structures
             if json_valid and isinstance(json_data, dict) and 'line_items' in json_data:
-                # Original nested format with line_items array
+                # Nested format with line_items array
                 data = pd.DataFrame(json_data['line_items'])
-                self._quote_metadata = {
-                    'quote_info': json_data.get('quote_info', {}),
-                    'vendor': json_data.get('vendor', {}),
-                    'customer': json_data.get('customer', {}),
-                    'financial_summary': json_data.get('financial_summary', {})
-                }
+
+                # Check if this is FilePro format (has 'meta' key) or original format
+                if 'meta' in json_data:
+                    # FilePro format - convert metadata
+                    self._quote_metadata = self._convert_filepro_metadata(json_data)
+                    if self._quote_metadata.get('quote_info', {}).get('quote_number'):
+                        quote_number = self._quote_metadata['quote_info']['quote_number']
+                else:
+                    # Original format
+                    self._quote_metadata = {
+                        'quote_info': json_data.get('quote_info', {}),
+                        'vendor': json_data.get('vendor', {}),
+                        'customer': json_data.get('customer', {}),
+                        'financial_summary': json_data.get('financial_summary', {})
+                    }
             elif json_valid and isinstance(json_data, list):
                 # Flat array format
                 data = pd.DataFrame(json_data)
