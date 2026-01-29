@@ -41,7 +41,7 @@ Supporting files:
 
 `CONFIG` dict at `filepro_sync.py:39`:
 - `token_file`: OAuth token pickle path (default: `/home/filepro/credentials/token.pickle`)
-- `google_drive_folder_id`: Target Drive folder ID
+- `google_drive_folder_id`: Target Drive folder ID (CLIENT-QUOTES: `1SG2iyJ1ej_MUyu4WEJyImWG8iz78A-j0`)
 - `export_directory`: Watch directory (default: `/appl/spool/QUOTES-SHEETS`)
 - `file_pattern`: Glob pattern (default: `QUOTE_*.json`)
 - `archive_directory`: Where processed files move (default: `/home/filepro/exports/archive`)
@@ -63,4 +63,12 @@ Filename pattern: `QUOTE_[NUMBER]_[TIMESTAMP].json` (e.g., `QUOTE_12345_20250124
 
 **Flat format**: Simple array of line item objects.
 
-**Note**: Actual FilePro exports use different structure with `meta`, `invoiced_to`, `ship_to`, `quote_details`, `entry_details`, and `totals` sections - the processor may need updates to handle this format.
+**Trigger file format**: Spool directory contains small trigger files with `html_path` pointing to actual quote JSON:
+```json
+{
+  "quote_number": "91697",
+  "html_path": "/appl/fileprow/quotes/91697.json"
+}
+```
+
+**FilePro format**: Actual quote files use `meta`, `invoiced_to`, `ship_to`, `quote_details`, `entry_details`, `line_items`, and `totals` sections - fully supported by the processor.
