@@ -17,6 +17,7 @@ Setup:
 """
 
 import os
+import re
 import time
 import json
 import logging
@@ -25,7 +26,7 @@ import urllib.request
 import urllib.error
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
 
 import pandas as pd
 import gspread
@@ -280,36 +281,201 @@ class QuotationProcessor:
     def __init__(self, sheets_client: GoogleSheetsClient):
         self.sheets_client = sheets_client
         self._quote_metadata = None
-    
+
+    def _parse_filepro_json(self, file_path: Path) -> tuple[List[Dict], Dict[str, Any]]:
+        """
+        Parse FilePro JSON format which has malformed structure:
+        - Line items are loose objects between entry_details and totals (not in array)
+        - Missing commas in totals section
+        Returns (line_items, metadata_dict)
+        """
+        with open(file_path, 'r') as f:
+            content = f.read()
+
+        # Extract the structured sections using regex
+        metadata = {}
+
+        # Parse meta section
+        meta_match = re.search(r'"meta"\s*:\s*(\{[^}]+\})', content, re.DOTALL)
+        if meta_match:
+            try:
+                metadata['meta'] = json.loads(meta_match.group(1))
+            except json.JSONDecodeError:
+                metadata['meta'] = {}
+
+        # Parse invoiced_to section
+        invoiced_match = re.search(r'"invoiced_to"\s*:\s*(\{[^}]+\})', content, re.DOTALL)
+        if invoiced_match:
+            try:
+                metadata['invoiced_to'] = json.loads(invoiced_match.group(1))
+            except json.JSONDecodeError:
+                metadata['invoiced_to'] = {}
+
+        # Parse ship_to section
+        ship_match = re.search(r'"ship_to"\s*:\s*(\{[^}]+\})', content, re.DOTALL)
+        if ship_match:
+            try:
+                metadata['ship_to'] = json.loads(ship_match.group(1))
+            except json.JSONDecodeError:
+                metadata['ship_to'] = {}
+
+        # Parse quote_details section
+        quote_details_match = re.search(r'"quote_details"\s*:\s*(\{[^}]+\})', content, re.DOTALL)
+        if quote_details_match:
+            try:
+                metadata['quote_details'] = json.loads(quote_details_match.group(1))
+            except json.JSONDecodeError:
+                metadata['quote_details'] = {}
+
+        # Parse entry_details section
+        entry_match = re.search(r'"entry_details"\s*:\s*(\{[^}]+\})', content, re.DOTALL)
+        if entry_match:
+            try:
+                metadata['entry_details'] = json.loads(entry_match.group(1))
+            except json.JSONDecodeError:
+                metadata['entry_details'] = {}
+
+        # Parse totals section (fix malformed JSON - missing commas, empty values)
+        totals_match = re.search(r'"totals"\s*:\s*\{([^}]+)\}', content, re.DOTALL)
+        if totals_match:
+            totals_content = totals_match.group(1)
+            metadata['totals'] = {}
+            # Match key-value pairs, handling keys with colons and numeric/null values
+            # Pattern: "Key Name:" or "Key Name" followed by optional whitespace and value
+            for match in re.finditer(r'"([^"]+)"\s*:\s*([-\d.]+|null)?', totals_content):
+                key = match.group(1).strip().rstrip(':')
+                val = match.group(2)
+                if val is None or val == 'null' or val.strip() == '':
+                    metadata['totals'][key] = None
+                else:
+                    try:
+                        metadata['totals'][key] = float(val.strip())
+                    except ValueError:
+                        metadata['totals'][key] = None
+
+        # Extract line items - they're loose objects with "type": "line"
+        line_items = []
+        # Match all objects that have qty, part_id, description pattern
+        item_pattern = re.compile(
+            r'\{\s*"qty"\s*:\s*"([^"]*)"\s*,\s*'
+            r'"part_id"\s*:\s*"([^"]*)"\s*,\s*'
+            r'"description"\s*:\s*"([^"]*)"\s*,\s*'
+            r'"price_each"\s*:\s*"([^"]*)"\s*,\s*'
+            r'"price_extended"\s*:\s*"([^"]*)"\s*,\s*'
+            r'"type"\s*:\s*"([^"]*)"\s*\}',
+            re.DOTALL
+        )
+
+        for match in item_pattern.finditer(content):
+            qty_str = match.group(1).strip()
+            price_each_str = match.group(4).strip()
+            price_ext_str = match.group(5).strip()
+
+            line_items.append({
+                'qty': int(qty_str) if qty_str.isdigit() else (float(qty_str) if qty_str else ''),
+                'part_id': match.group(2).strip(),
+                'description': match.group(3).strip(),
+                'price_each': float(price_each_str) if price_each_str and price_each_str.replace('-', '').replace('.', '').isdigit() else '',
+                'price_extended': float(price_ext_str) if price_ext_str and price_ext_str.replace('-', '').replace('.', '').isdigit() else '',
+                'type': match.group(6).strip()
+            })
+
+        return line_items, metadata
+
+    def _convert_filepro_metadata(self, fp_metadata: Dict[str, Any]) -> Dict[str, Any]:
+        """Convert FilePro metadata structure to the format expected by GoogleSheetsClient"""
+        meta = fp_metadata.get('meta', {})
+        quote_details = fp_metadata.get('quote_details', {})
+        entry_details = fp_metadata.get('entry_details', {})
+        invoiced_to = fp_metadata.get('invoiced_to', {})
+        ship_to = fp_metadata.get('ship_to', {})
+        totals = fp_metadata.get('totals', {})
+
+        # Build quote_info from meta and quote_details
+        quote_info = {
+            'quote_number': meta.get('quote_number') or quote_details.get('QUOTE#', ''),
+            'date': meta.get('quote_date') or quote_details.get('DATE', ''),
+            'purchase_order_ref': quote_details.get('PURCHASE ORDER #', ''),
+            'terms': quote_details.get('TERMS OF SALE', ''),
+            'ship_via': entry_details.get('SHIP VIA', ''),
+            'order_number': quote_details.get('ORDER #', ''),
+            'sold_by': entry_details.get('SOLD BY:', '')
+        }
+
+        # Build customer info from invoiced_to
+        invoiced_lines = invoiced_to.get('lines', [])
+        customer = {
+            'bill_to': {
+                'name': invoiced_lines[0] if len(invoiced_lines) > 0 else '',
+                'organization': invoiced_lines[1] if len(invoiced_lines) > 1 else '',
+                'address': ', '.join(invoiced_lines[2:]) if len(invoiced_lines) > 2 else ''
+            }
+        }
+
+        # Build financial summary from totals
+        financial_summary = {
+            'sub_total': totals.get('Sub Total') or totals.get('Sub Total:') or 0,
+            'tax_amount': totals.get('Tax Amount (T)') or totals.get('Tax') or 0,
+            'shipping': totals.get('Shipping') or 0,
+            'total_amount': totals.get('Total') or totals.get('Total:') or 0
+        }
+
+        return {
+            'quote_info': quote_info,
+            'customer': customer,
+            'vendor': {},
+            'financial_summary': financial_summary
+        }
+
     def process_file(self, file_path: Path) -> bool:
         """Process a single quotation file"""
         try:
             logger.info(f"Processing file: {file_path}")
-            
+
             # Extract quotation number from filename
             quote_number = self._extract_quote_number(file_path)
             if not quote_number:
                 logger.error(f"Could not extract quote number from {file_path}")
                 return False
-            
-            # Read JSON data
-            with open(file_path, 'r') as f:
-                json_data = json.load(f)
 
-            # Handle nested JSON structure (FilePro format)
-            if isinstance(json_data, dict) and 'line_items' in json_data:
+            # Try standard JSON parsing first
+            try:
+                with open(file_path, 'r') as f:
+                    json_data = json.load(f)
+                json_valid = True
+            except json.JSONDecodeError:
+                json_valid = False
+                json_data = None
+
+            # Handle different JSON structures
+            if json_valid and isinstance(json_data, dict) and 'line_items' in json_data:
+                # Original nested format with line_items array
                 data = pd.DataFrame(json_data['line_items'])
-                # Store metadata for sheet header
                 self._quote_metadata = {
                     'quote_info': json_data.get('quote_info', {}),
                     'vendor': json_data.get('vendor', {}),
                     'customer': json_data.get('customer', {}),
                     'financial_summary': json_data.get('financial_summary', {})
                 }
-            else:
+            elif json_valid and isinstance(json_data, list):
                 # Flat array format
-                data = pd.DataFrame(json_data) if isinstance(json_data, list) else pd.read_json(file_path)
+                data = pd.DataFrame(json_data)
                 self._quote_metadata = None
+            else:
+                # FilePro format (malformed JSON) - parse manually
+                logger.info("Parsing FilePro format JSON")
+                line_items, fp_metadata = self._parse_filepro_json(file_path)
+
+                if not line_items:
+                    logger.error(f"No line items found in {file_path}")
+                    return False
+
+                data = pd.DataFrame(line_items)
+                self._quote_metadata = self._convert_filepro_metadata(fp_metadata)
+
+                # Use quote number from metadata if available
+                if self._quote_metadata.get('quote_info', {}).get('quote_number'):
+                    quote_number = self._quote_metadata['quote_info']['quote_number']
 
             logger.info(f"Loaded {len(data)} rows for quote {quote_number}")
             
