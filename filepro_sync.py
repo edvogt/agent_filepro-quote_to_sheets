@@ -22,6 +22,7 @@ import time
 import json
 import logging
 import pickle
+import subprocess
 import urllib.request
 import urllib.error
 from datetime import datetime
@@ -46,6 +47,9 @@ CONFIG = {
     # $SPOOL = /appl/spool
     'export_directory': '/appl/spool/QUOTES-SHEETS',
     'file_pattern': 'QUOTE_*.json',
+
+    # JSON Fix Script (fixes malformed FilePro JSON before processing)
+    'json_fix_script': '/home/filepro/agent_filepro-quote_to_sheets/fix_filepro_json.sh',
 
     # Sync Settings
     'check_interval': 60,  # seconds
@@ -282,6 +286,39 @@ class QuotationProcessor:
         self.sheets_client = sheets_client
         self._quote_metadata = None
 
+    def _fix_json_file(self, file_path: Path) -> bool:
+        """
+        Run fix_filepro_json.sh to fix malformed JSON before processing.
+        Returns True if fix was successful or script not configured.
+        """
+        fix_script = CONFIG.get('json_fix_script')
+        if not fix_script or not Path(fix_script).exists():
+            logger.debug("JSON fix script not configured or not found, skipping")
+            return True
+
+        try:
+            logger.info(f"Running JSON fix script on: {file_path}")
+            result = subprocess.run(
+                [fix_script, str(file_path)],
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+
+            if result.returncode != 0:
+                logger.error(f"JSON fix script failed: {result.stderr}")
+                return False
+
+            logger.info(f"JSON fix script completed: {result.stdout.strip()}")
+            return True
+
+        except subprocess.TimeoutExpired:
+            logger.error(f"JSON fix script timed out for {file_path}")
+            return False
+        except Exception as e:
+            logger.error(f"Error running JSON fix script: {e}")
+            return False
+
     def _parse_filepro_json(self, file_path: Path) -> tuple[List[Dict], Dict[str, Any]]:
         """
         Parse FilePro JSON format which has malformed structure:
@@ -438,6 +475,10 @@ class QuotationProcessor:
                 logger.error(f"Could not extract quote number from {file_path}")
                 return False
 
+            # Fix malformed JSON before processing
+            if not self._fix_json_file(file_path):
+                logger.warning(f"JSON fix failed for {file_path}, attempting to parse anyway")
+
             # Try standard JSON parsing first
             try:
                 with open(file_path, 'r') as f:
@@ -459,6 +500,10 @@ class QuotationProcessor:
                 # Update quote number from trigger file if available
                 if json_data.get('quote_number'):
                     quote_number = json_data['quote_number']
+
+                # Fix malformed JSON in actual quote file
+                if not self._fix_json_file(actual_path):
+                    logger.warning(f"JSON fix failed for {actual_path}, attempting to parse anyway")
 
                 # Read the actual quote file
                 try:
