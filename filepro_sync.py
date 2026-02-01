@@ -568,7 +568,11 @@ class QuotationProcessor:
 
             # Display the sheet URL on successful sync
             if success and sheet_url:
-                logger.info(f"Sheet URL: {sheet_url}")
+                # Prominent output for sheet URL
+                logger.info("=" * 60)
+                logger.info(f"  QUOTE {quote_number} SYNCED SUCCESSFULLY")
+                logger.info(f"  {sheet_url}")
+                logger.info("=" * 60)
                 # Call webhook if configured
                 call_webhook(quote_number, sheet_url)
 
