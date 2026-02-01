@@ -668,7 +668,11 @@ class QuotationFileHandler(FileSystemEventHandler):
         
         # Wait for file to be fully written
         time.sleep(2)
-        
+
+        # Check file still exists (may have been processed by another event)
+        if not file_path.exists():
+            return
+
         # Process the file
         self.processing.add(str(file_path))
         try:
