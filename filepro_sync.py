@@ -63,6 +63,7 @@ CONFIG = {
     # Logging
     'log_file': 'filepro_sync.log',
     'log_level': 'INFO',
+    'url_log_file': '/home/filepro/quote_urls.log',
 
     # Webhook (Google Apps Script Web App URL)
     'webhook_url': 'https://script.google.com/macros/s/AKfycbyr34ZZ5h7kZpUtJwu7Pn_O2XxUq3FfW3Wb027PCbNSUaav8jnEgbxU-YbpAMJJlGcK/exec',
@@ -573,6 +574,10 @@ class QuotationProcessor:
                 logger.info(f"  QUOTE {quote_number} SYNCED SUCCESSFULLY")
                 logger.info(f"  {sheet_url}")
                 logger.info("=" * 60)
+                # Save to URL log file
+                url_log = Path(CONFIG.get('url_log_file', '/home/filepro/quote_urls.log'))
+                with open(url_log, 'a') as f:
+                    f.write(f"{datetime.now().isoformat()} | Quote {quote_number} | {sheet_url}\n")
                 # Call webhook if configured
                 call_webhook(quote_number, sheet_url)
 
