@@ -569,7 +569,9 @@ class QuotationProcessor:
 
             # Display the sheet URL on successful sync
             if success and sheet_url:
-                # Prominent output for sheet URL
+                # Single line for easy grep by other scripts
+                logger.info(f"SYNCED | Quote {quote_number} | {sheet_url}")
+                # Prominent output for console
                 logger.info("=" * 60)
                 logger.info(f"  QUOTE {quote_number} SYNCED SUCCESSFULLY")
                 logger.info(f"  {sheet_url}")
