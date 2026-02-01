@@ -65,7 +65,7 @@ CONFIG = {
     'log_level': 'INFO',
 
     # Webhook (Google Apps Script Web App URL)
-    'webhook_url': None,  # Set to your deployed Apps Script URL
+    'webhook_url': 'https://script.google.com/macros/s/AKfycbyr34ZZ5h7kZpUtJwu7Pn_O2XxUq3FfW3Wb027PCbNSUaav8jnEgbxU-YbpAMJJlGcK/exec',
     'webhook_timeout': 30  # seconds
 }
 
