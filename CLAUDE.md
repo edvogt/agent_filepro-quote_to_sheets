@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Python application that monitors a directory for FilePro accounting system quotation exports (JSON) and automatically syncs them to Google Sheets. Runs as a background service on Ubuntu using watchdog for filesystem monitoring.
+Python application that monitors a directory for FilePro quotation exports (TSV) and automatically syncs them to Google Sheets. Runs as a background service on Ubuntu using watchdog for filesystem monitoring.
 
 ## Key Commands
 
@@ -20,36 +20,30 @@ python filepro_sync.py
 
 # Test Google Sheets API connection (uses service account, not OAuth)
 python test_sheets.py
-
-# Manually fix a malformed FilePro JSON file
-./fix_filepro_json.sh QUOTE_12345.json          # fix in place (backup saved as .orig)
-./fix_filepro_json.sh input.json output.json    # fix to new file
 ```
 
 ## Architecture
 
-**Data flow**: FilePro exports JSON → Watchdog detects file → JSON fix script runs → QuotationProcessor parses → GoogleSheetsClient creates/updates Sheet → Webhook formats sheet → URL logged → File archived
+**Data flow**: FilePro exports TSV → Watchdog detects file → `_parse_tsv_file()` parses → JSON written to disk → GoogleSheetsClient creates/updates Sheet → Webhook formats sheet → URL logged → JSON archived → TSV removed
 
 Three main components in `filepro_sync.py`:
 
-1. **GoogleSheetsClient** (line 89): OAuth token loading/refresh, Sheets CRUD operations, formatting. Uses `gspread` library.
-   - `find_sheet_by_quote_number()` (line 108): Searches existing sheets in target folder
-   - `create_or_update_sheet()` (line 126): Main entry point for sheet creation/update
-   - `_populate_worksheet()` (line 164): Writes header, line items, and financial summary
-   - `_apply_formatting()` (line 218): Applies basic Python-side formatting (colors, bold headers, auto-resize, freeze rows). The Apps Script webhook (`format_quote_sheet.js`) runs afterward and applies the final, more detailed formatting.
+1. **GoogleSheetsClient** (line 123): OAuth token loading/refresh, Sheets CRUD operations, formatting. Uses `gspread` library.
+   - `find_sheet_by_quote_number()`: Searches existing sheets in target folder
+   - `create_or_update_sheet()`: Main entry point for sheet creation/update
+   - `_populate_worksheet()`: Writes header, line items, and financial summary
+   - `_apply_formatting()`: Applies basic Python-side formatting (colors, bold headers, auto-resize, freeze rows). The Apps Script webhook (`format_quote_sheet.js`) runs afterward and applies the final, more detailed formatting.
 
-2. **QuotationProcessor** (line 283): JSON parsing, quote number extraction from filename, data cleaning with pandas, coordinates sync workflow.
-   - `_fix_json_file()` (line 290): Calls `fix_filepro_json.sh` to fix malformed JSON before parsing
-   - `_parse_filepro_json()` (line 323): Regex-based parser for malformed FilePro JSON (fallback when `json.load()` fails after fix script)
-   - `_convert_filepro_metadata()` (line 423): Transforms FilePro structure to standard format
-   - `process_file()` (line 468): Main entry point - fixes JSON, handles trigger files, all formats
+2. **QuotationProcessor** (line 355): TSV parsing, quote number extraction, data cleaning with pandas, coordinates sync workflow.
+   - `_parse_tsv_file()`: Reads tab-delimited export, maps 83 columns to metadata and up to 10 line item slots
+   - `process_file()`: Main entry point — parse TSV → write JSON → sync to Sheets → archive JSON → delete TSV
 
-3. **QuotationFileHandler** (line 649): Watchdog `FileSystemEventHandler` subclass. Monitors export directory, debounces file creation events (2-second delay), prevents duplicate processing via `self.processing` set.
+3. **QuotationFileHandler**: Watchdog `FileSystemEventHandler` subclass. Monitors export directory, debounces file creation events (2-second delay), prevents duplicate processing via `self.processing` set.
 
 Supporting files:
 - `setup_oauth.py`: One-time OAuth flow generating `/home/filepro/credentials/token.pickle`
 - `test_sheets.py`: Diagnostic script using service account auth (different auth path than main app)
-- `call_webhook()` (line 247): POST to Apps Script after successful sync
+- `call_webhook()`: POST to Apps Script after successful sync
 - `format_quote_sheet.js`: Google Apps Script for sheet formatting (deployed as web app)
 - `quote_url_html.sh`: Output sheet URLs in HTML link format
 
@@ -61,58 +55,48 @@ Two authentication methods exist in this codebase:
 
 2. **Service Account (test script)**: `test_sheets.py` uses a service account JSON key file. This is a separate auth path for diagnostics only.
 
-## JSON Fix Script
+## TSV Input Format
 
-`fix_filepro_json.sh` automatically fixes malformed FilePro JSON before processing. Called by `_fix_json_file()` (line 290) in `QuotationProcessor`.
+FilePro exports tab-delimited files named `QUOTE_[NUMBER]_[TIMESTAMP].tsv` (e.g., `QUOTE_96036_20260227_120000.tsv`) to the watch directory. One record per file (one row of data).
 
-**Short-circuit**: If `jq` is available and the file is already valid JSON with a `line_items` key, the script exits immediately without modifying the file.
+**83-column layout** defined by `TSV_HEADER`, `TSV_ITEM_BASE`, `TSV_ITEM_FIELDS`, `TSV_ITEM_COUNT` constants:
 
-**Fixes applied (when needed):**
-- Wraps loose line item objects in `"line_items": [...]` array
-- Adds missing commas in totals section
-- Fixes empty `"Tax":` value → `"Tax": null`
-- Removes trailing commas before `]` or `}`
-- Normalizes spacing in numeric values
+| Columns | Content |
+|---|---|
+| 0–8 | Quote#, Date, Cust PO#, Terms, Ship Via, Salesperson, Subtotal, Tax, Total |
+| 9–15 | Company Name, Bill Contact, Bill Addr1/2, City, State, Zip |
+| 16–22 | Ship Company, Ship Contact, Ship Addr1/2, City, State, Zip |
+| 23–82 | 10 line item slots × 6 fields (Item#, Qty, Price, Extension, Description, New Inv Description) |
+
+Line item slots with an empty Item# field are skipped. Items prefixed with `#` are FilePro memo/comment lines (no qty or price).
+
+The longer `New Inv Description` (field +5 per slot) is used as the primary description; falls back to `Description` (field +4) if empty.
+
+## JSON Output Format
+
+After parsing, `process_file()` writes a structured JSON file (`QUOTE_[NUMBER]_[TIMESTAMP].json`) alongside the TSV before syncing. This is the file that gets archived. Format:
+
+```json
+{
+  "quote_info":        { "quote_number", "date", "purchase_order_ref", "terms", "ship_via", "sold_by" },
+  "customer":          { "bill_to": { "name", "organization", "address" } },
+  "financial_summary": { "sub_total", "tax_amount", "shipping", "total_amount" },
+  "line_items":        [ { "qty", "part_id", "description", "price_each", "price_extended" }, ... ]
+}
+```
 
 ## Configuration
 
-`CONFIG` dict at `filepro_sync.py:41`:
+`CONFIG` dict at `filepro_sync.py:42`:
 - `token_file`: OAuth token pickle path (default: `/home/filepro/credentials/token.pickle`)
 - `google_drive_folder_id`: Target Drive folder ID (CLIENT-QUOTES: `1SG2iyJ1ej_MUyu4WEJyImWG8iz78A-j0`)
 - `export_directory`: Watch directory (default: `/appl/spool/QUOTES-SHEETS`)
-- `file_pattern`: Glob pattern (default: `QUOTE_*.json`)
-- `json_fix_script`: Absolute path to bash script that fixes malformed JSON (default: `/home/filepro/agent_filepro-quote_to_sheets/fix_filepro_json.sh`)
+- `file_pattern`: Glob pattern (default: `QUOTE_*.tsv`)
 - `log_file`: Relative path — `filepro_sync.log` created in the working directory where `filepro_sync.py` is launched
 - `url_log_file`: Log file for sheet URLs (default: `/home/filepro/quote_urls.log`)
-- `archive_directory`: Where processed files move (default: `/home/filepro/exports/archive`); archived into `YYYY-MM/` subdirectory
+- `archive_directory`: Where processed JSON files move (default: `/home/filepro/exports/archive`); archived into `YYYY-MM/` subdirectory
 - `webhook_url`: Apps Script URL for sheet formatting (deployed web app URL)
 - `webhook_timeout`: HTTP timeout in seconds for Apps Script call (default: 30)
-
-## JSON Format
-
-Filename pattern: `QUOTE_[NUMBER]_[TIMESTAMP].json` (e.g., `QUOTE_12345_20250124_143022.json`) - quote number extracted from second underscore segment via `_extract_quote_number()` (line 596).
-
-**Nested format** (code expects `line_items` key):
-```json
-{
-  "line_items": [...],
-  "quote_info": {...},
-  "customer": {...},
-  "financial_summary": {...}
-}
-```
-
-**Flat format**: Simple array of line item objects.
-
-**Trigger file format**: Spool directory contains small trigger files with `html_path` pointing to actual quote JSON:
-```json
-{
-  "quote_number": "91697",
-  "html_path": "/appl/fileprow/quotes/91697.json"
-}
-```
-
-**FilePro format**: Actual quote files use `meta`, `invoiced_to`, `ship_to`, `quote_details`, `entry_details`, `line_items`, and `totals` sections. This format has malformed JSON (missing commas, loose objects) that requires regex-based parsing in `_parse_filepro_json()`.
 
 ## Webhook Formatting
 
@@ -144,8 +128,12 @@ Sheet URLs are logged to `/home/filepro/quote_urls.log` in format:
 
 ## Startup Behavior
 
-On startup, `process_existing_files()` (line 688) processes any files already in the watch directory before starting the watchdog observer. The observer then monitors for new files in real-time.
+On startup, `process_existing_files()` processes any `QUOTE_*.tsv` files already in the watch directory before starting the watchdog observer. The observer then monitors for new files in real-time.
+
+## FilePro Source Database
+
+Quote data comes from `/appl/filepro/stquote/`. The TSV export is driven by `/appl/filepro/stquote/prc.tabexport` which maps stquote fields to the 83-column layout above.
 
 ## Note on README.md
 
-The README.md describes an older Windows/CSV-based workflow with service account auth. The actual implementation uses Ubuntu/JSON with OAuth tokens. Refer to this CLAUDE.md and the code for current behavior.
+The README.md describes an older Windows/CSV-based workflow with service account auth. The actual implementation uses Ubuntu/TSV→JSON with OAuth tokens. Refer to this CLAUDE.md and the code for current behavior.
