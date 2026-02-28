@@ -18,6 +18,7 @@ Setup:
 
 import os
 import re
+import csv
 import time
 import json
 import logging
@@ -46,10 +47,7 @@ CONFIG = {
     # FilePro Export Settings
     # $SPOOL = /appl/spool
     'export_directory': '/appl/spool/QUOTES-SHEETS',
-    'file_pattern': 'QUOTE_*.json',
-
-    # JSON Fix Script (fixes malformed FilePro JSON before processing)
-    'json_fix_script': '/home/filepro/agent_filepro-quote_to_sheets/fix_filepro_json.sh',
+    'file_pattern': 'QUOTE_*.tsv',
 
     # Sync Settings
     'check_interval': 60,  # seconds
@@ -82,6 +80,42 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger('FilePro-Sync')
+
+# ============================================================================
+# TSV COLUMN LAYOUT (stquote/prc.tabexport field order)
+# ============================================================================
+# Columns 0-22: quote header and customer info
+TSV_HEADER = {
+    'quote_number':  0,
+    'quote_date':    1,
+    'cust_po':       2,
+    'terms':         3,
+    'ship_via':      4,
+    'salesperson':   5,
+    'subtotal':      6,
+    'tax':           7,
+    'total':         8,
+    'company_name':  9,
+    'bill_contact': 10,
+    'bill_addr1':   11,
+    'bill_addr2':   12,
+    'bill_city':    13,
+    'bill_state':   14,
+    'bill_zip':     15,
+    'ship_company': 16,
+    'ship_contact': 17,
+    'ship_addr1':   18,
+    'ship_addr2':   19,
+    'ship_city':    20,
+    'ship_state':   21,
+    'ship_zip':     22,
+}
+# Columns 23+: 10 line item slots, 6 fields each
+# Slot N (0-indexed): base = 23 + (N * 6)
+# +0 Item Number, +1 Qty, +2 Price, +3 Extension, +4 Description, +5 New Inv Description
+TSV_ITEM_BASE   = 23
+TSV_ITEM_FIELDS = 6
+TSV_ITEM_COUNT  = 10
 
 # ============================================================================
 # GOOGLE SHEETS CLIENT
@@ -287,6 +321,84 @@ class QuotationProcessor:
         self.sheets_client = sheets_client
         self._quote_metadata = None
 
+    def _parse_tsv_file(self, file_path: Path) -> tuple[List[Dict], Dict[str, Any]]:
+        """Parse a FilePro tab-delimited quote export into (line_items, metadata)."""
+        with open(file_path, 'r') as f:
+            reader = csv.reader(f, delimiter='\t')
+            rows = [row for row in reader if any(field.strip() for field in row)]
+
+        if not rows:
+            return [], {}
+
+        row = rows[0]
+
+        # Ensure row is long enough
+        expected = TSV_ITEM_BASE + (TSV_ITEM_COUNT * TSV_ITEM_FIELDS)
+        while len(row) < expected:
+            row.append('')
+
+        def col(i):
+            return row[i].strip() if i < len(row) else ''
+
+        def to_float(val):
+            try:
+                return float(val) if val else 0
+            except ValueError:
+                return 0
+
+        metadata = {
+            'quote_info': {
+                'quote_number':      col(TSV_HEADER['quote_number']),
+                'date':              col(TSV_HEADER['quote_date']),
+                'purchase_order_ref': col(TSV_HEADER['cust_po']),
+                'terms':             col(TSV_HEADER['terms']),
+                'ship_via':          col(TSV_HEADER['ship_via']),
+                'sold_by':           col(TSV_HEADER['salesperson']),
+            },
+            'customer': {
+                'bill_to': {
+                    'name':         col(TSV_HEADER['company_name']),
+                    'organization': col(TSV_HEADER['bill_contact']),
+                    'address':      ', '.join(filter(None, [
+                        col(TSV_HEADER['bill_addr1']),
+                        col(TSV_HEADER['bill_addr2']),
+                        col(TSV_HEADER['bill_city']),
+                        col(TSV_HEADER['bill_state']),
+                        col(TSV_HEADER['bill_zip']),
+                    ])),
+                }
+            },
+            'financial_summary': {
+                'sub_total':    to_float(col(TSV_HEADER['subtotal'])),
+                'tax_amount':   to_float(col(TSV_HEADER['tax'])),
+                'shipping':     0,
+                'total_amount': to_float(col(TSV_HEADER['total'])),
+            },
+        }
+
+        line_items = []
+        for i in range(TSV_ITEM_COUNT):
+            base = TSV_ITEM_BASE + (i * TSV_ITEM_FIELDS)
+            item_num  = col(base)
+            qty       = col(base + 1)
+            price     = col(base + 2)
+            ext       = col(base + 3)
+            desc      = col(base + 4)
+            new_desc  = col(base + 5)
+
+            if not item_num:
+                continue
+
+            line_items.append({
+                'qty':             qty,
+                'part_id':         item_num,
+                'description':     new_desc or desc,
+                'price_each':      price,
+                'price_extended':  ext,
+            })
+
+        return line_items, metadata
+
     def _fix_json_file(self, file_path: Path) -> bool:
         """
         Run fix_filepro_json.sh to fix malformed JSON before processing.
@@ -466,129 +578,68 @@ class QuotationProcessor:
         }
 
     def process_file(self, file_path: Path) -> bool:
-        """Process a single quotation file"""
+        """Process a single quotation TSV file"""
         try:
             logger.info(f"Processing file: {file_path}")
 
-            # Extract quotation number from filename
-            quote_number = self._extract_quote_number(file_path)
-            if not quote_number:
-                logger.error(f"Could not extract quote number from {file_path}")
+            # Parse TSV
+            line_items, metadata = self._parse_tsv_file(file_path)
+
+            if not line_items:
+                logger.error(f"No line items found in {file_path}")
                 return False
 
-            # Fix malformed JSON before processing
-            if not self._fix_json_file(file_path):
-                logger.warning(f"JSON fix failed for {file_path}, attempting to parse anyway")
+            # Quote number: from filename first, then from TSV data
+            quote_number = self._extract_quote_number(file_path)
+            if not quote_number:
+                quote_number = metadata.get('quote_info', {}).get('quote_number')
+            if not quote_number:
+                logger.error(f"Could not determine quote number from {file_path}")
+                return False
 
-            # Try standard JSON parsing first
-            try:
-                with open(file_path, 'r') as f:
-                    json_data = json.load(f)
-                json_valid = True
-            except json.JSONDecodeError:
-                json_valid = False
-                json_data = None
-
-            # Check if this is a trigger file pointing to actual quote data
-            if json_valid and isinstance(json_data, dict) and 'html_path' in json_data:
-                actual_path = Path(json_data['html_path'])
-                logger.info(f"Trigger file detected, reading actual quote from: {actual_path}")
-
-                if not actual_path.exists():
-                    logger.error(f"Actual quote file not found: {actual_path}")
-                    return False
-
-                # Update quote number from trigger file if available
-                if json_data.get('quote_number'):
-                    quote_number = json_data['quote_number']
-
-                # Fix malformed JSON in actual quote file
-                if not self._fix_json_file(actual_path):
-                    logger.warning(f"JSON fix failed for {actual_path}, attempting to parse anyway")
-
-                # Read the actual quote file
-                try:
-                    with open(actual_path, 'r') as f:
-                        json_data = json.load(f)
-                    json_valid = True
-                except json.JSONDecodeError:
-                    json_valid = False
-                    # Will try FilePro parser below
-                    file_path = actual_path
-
-            # Handle different JSON structures
-            if json_valid and isinstance(json_data, dict) and 'line_items' in json_data:
-                # Nested format with line_items array
-                data = pd.DataFrame(json_data['line_items'])
-
-                # Check if this is FilePro format (has 'meta' key) or original format
-                if 'meta' in json_data:
-                    # FilePro format - convert metadata
-                    self._quote_metadata = self._convert_filepro_metadata(json_data)
-                    if self._quote_metadata.get('quote_info', {}).get('quote_number'):
-                        quote_number = self._quote_metadata['quote_info']['quote_number']
-                else:
-                    # Original format
-                    self._quote_metadata = {
-                        'quote_info': json_data.get('quote_info', {}),
-                        'vendor': json_data.get('vendor', {}),
-                        'customer': json_data.get('customer', {}),
-                        'financial_summary': json_data.get('financial_summary', {})
-                    }
-            elif json_valid and isinstance(json_data, list):
-                # Flat array format
-                data = pd.DataFrame(json_data)
-                self._quote_metadata = None
-            else:
-                # FilePro format (malformed JSON) - parse manually
-                logger.info("Parsing FilePro format JSON")
-                line_items, fp_metadata = self._parse_filepro_json(file_path)
-
-                if not line_items:
-                    logger.error(f"No line items found in {file_path}")
-                    return False
-
-                data = pd.DataFrame(line_items)
-                self._quote_metadata = self._convert_filepro_metadata(fp_metadata)
-
-                # Use quote number from metadata if available
-                if self._quote_metadata.get('quote_info', {}).get('quote_number'):
-                    quote_number = self._quote_metadata['quote_info']['quote_number']
+            data = pd.DataFrame(line_items)
+            data = self._clean_data(data)
 
             logger.info(f"Loaded {len(data)} rows for quote {quote_number}")
-            
-            # Clean and validate data
-            data = self._clean_data(data)
+
+            # Convert TSV data to JSON and write alongside TSV for archiving
+            json_data = {
+                'quote_info':       metadata.get('quote_info', {}),
+                'customer':         metadata.get('customer', {}),
+                'financial_summary': metadata.get('financial_summary', {}),
+                'line_items':       line_items,
+            }
+            json_path = file_path.with_suffix('.json')
+            with open(json_path, 'w') as jf:
+                json.dump(json_data, jf, indent=2)
+            logger.info(f"Wrote JSON: {json_path}")
 
             # Sync to Google Sheets
             success, sheet_url = self.sheets_client.create_or_update_sheet(
                 quote_number,
                 data,
-                metadata=self._quote_metadata
+                metadata=metadata
             )
 
-            # Display the sheet URL on successful sync
             if success and sheet_url:
-                # Single line for easy grep by other scripts
                 logger.info(f"SYNCED | Quote {quote_number} | {sheet_url}")
-                # Prominent output for console
                 logger.info("=" * 60)
                 logger.info(f"  QUOTE {quote_number} SYNCED SUCCESSFULLY")
                 logger.info(f"  {sheet_url}")
                 logger.info("=" * 60)
-                # Save to URL log file
                 url_log = Path(CONFIG.get('url_log_file', '/home/filepro/quote_urls.log'))
                 with open(url_log, 'a') as f:
                     f.write(f"{datetime.now().isoformat()} | Quote {quote_number} | {sheet_url}\n")
-                # Call webhook if configured
                 call_webhook(quote_number, sheet_url)
 
-            # Archive file if successful
+            # Archive JSON, remove TSV
             if success and CONFIG['archive_processed']:
-                self._archive_file(file_path)
+                self._archive_file(json_path)
+                file_path.unlink()
+                logger.info(f"Removed TSV: {file_path}")
 
             return success
-            
+
         except Exception as e:
             logger.error(f"Error processing file {file_path}: {e}")
             return False
