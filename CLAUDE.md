@@ -24,7 +24,7 @@ python test_sheets.py
 
 ## Architecture
 
-**Data flow**: FilePro exports TSV → Watchdog detects file → `_parse_tsv_file()` parses → JSON written to disk → GoogleSheetsClient creates/updates Sheet → Webhook formats sheet → URL logged → JSON archived → TSV removed
+**Data flow**: FilePro watchfolder → `stquote_to_spool.sh` runs `rreport` → TSV dropped in `exports/` → Watchdog detects file → `_parse_tsv_file()` parses → JSON written to disk → GoogleSheetsClient creates/updates Sheet → Webhook formats sheet → URL logged → JSON archived → TSV removed
 
 Three main components in `filepro_sync.py`:
 
@@ -32,19 +32,22 @@ Three main components in `filepro_sync.py`:
    - `find_sheet_by_quote_number()`: Searches existing sheets in target folder
    - `create_or_update_sheet()`: Main entry point for sheet creation/update
    - `_populate_worksheet()`: Writes header, line items, and financial summary
-   - `_apply_formatting()`: Applies basic Python-side formatting (colors, bold headers, auto-resize, freeze rows). The Apps Script webhook (`format_quote_sheet.js`) runs afterward and applies the final, more detailed formatting.
+   - `_apply_formatting()`: Rough Python-side formatting pass (colors, bold headers, auto-resize, freeze row 4). The Apps Script webhook runs afterward as the final formatting pass.
 
-2. **QuotationProcessor** (line 355): TSV parsing, quote number extraction, data cleaning with pandas, coordinates sync workflow.
+2. **QuotationProcessor** (line 317): TSV parsing, quote number extraction, data cleaning with pandas, coordinates sync workflow.
    - `_parse_tsv_file()`: Reads tab-delimited export, maps 83 columns to metadata and up to 10 line item slots
    - `process_file()`: Main entry point — parse TSV → write JSON → sync to Sheets → archive JSON → delete TSV
+   - `_parse_filepro_json()`, `_convert_filepro_metadata()`, `_fix_json_file()`: **Dead code** — legacy JSON pipeline methods never called in the current TSV flow; kept for reference only
 
 3. **QuotationFileHandler**: Watchdog `FileSystemEventHandler` subclass. Monitors export directory, debounces file creation events (2-second delay), prevents duplicate processing via `self.processing` set.
 
 Supporting files:
+- `stquote_to_spool.sh`: Called by FilePro watchfolder — sets `TERM=ansi`, `FP=/appl/fp`, `PFSKIPLOCKED=1`, runs `rreport` against `stquote` with `prc.tabexport -R <quote_number>`, writes to `/appl/fpmerge/quote_export.tsv`, then moves to `exports/QUOTE_<N>_<TIMESTAMP>.tsv`
 - `setup_oauth.py`: One-time OAuth flow generating `/home/filepro/credentials/token.pickle`
 - `test_sheets.py`: Diagnostic script using service account auth (different auth path than main app)
-- `call_webhook()`: POST to Apps Script after successful sync
-- `format_quote_sheet.js`: Google Apps Script for sheet formatting (deployed as web app)
+- `call_webhook()` (module-level function): POSTs `{quote_number, sheet_url, timestamp}` to Apps Script. The JS side extracts the sheet ID from the URL via regex (`extractSheetId()`).
+- `format_quote_sheet.js`: Google Apps Script web app for final sheet formatting. `findDataStartRow()` locates the column-header row dynamically; `findTotalsStartRow()` scans from the bottom for "Sub Total".
+- `fix_filepro_json.sh`: Legacy script for malformed JSON (older pipeline, unused).
 - `quote_url_html.sh`: Output sheet URLs in HTML link format
 
 ## Authentication
@@ -90,7 +93,7 @@ After parsing, `process_file()` writes a structured JSON file (`QUOTE_[NUMBER]_[
 `CONFIG` dict at `filepro_sync.py:42`:
 - `token_file`: OAuth token pickle path (default: `/home/filepro/credentials/token.pickle`)
 - `google_drive_folder_id`: Target Drive folder ID (CLIENT-QUOTES: `1SG2iyJ1ej_MUyu4WEJyImWG8iz78A-j0`)
-- `export_directory`: Watch directory (default: `/appl/spool/QUOTES-SHEETS`)
+- `export_directory`: Watch directory (default: `/home/filepro/agent_filepro-quote_to_sheets/exports`)
 - `file_pattern`: Glob pattern (default: `QUOTE_*.tsv`)
 - `log_file`: Relative path — `filepro_sync.log` created in the working directory where `filepro_sync.py` is launched
 - `url_log_file`: Log file for sheet URLs (default: `/home/filepro/quote_urls.log`)
@@ -134,6 +137,34 @@ On startup, `process_existing_files()` processes any `QUOTE_*.tsv` files already
 
 Quote data comes from `/appl/filepro/stquote/`. The TSV export is driven by `/appl/filepro/stquote/prc.tabexport` which maps stquote fields to the 83-column layout above.
 
-## Note on README.md
+## Debugging & Operations
 
-The README.md describes an older Windows/CSV-based workflow with service account auth. The actual implementation uses Ubuntu/TSV→JSON with OAuth tokens. Refer to this CLAUDE.md and the code for current behavior.
+**Tail the service log:**
+```bash
+tail -f /home/filepro/agent_filepro-quote_to_sheets/filepro_sync.log
+```
+
+**Manually trigger a sync** (drop a TSV in the watch dir to simulate FilePro export):
+```bash
+./stquote_to_spool.sh <quote_number>
+```
+Or copy an existing TSV into `exports/` — the watcher will pick it up within 2 seconds.
+
+**Check the webhook** is reachable (GET returns `{"status":"ready",...}`):
+```bash
+curl 'https://script.google.com/macros/s/<deploy_id>/exec'
+```
+
+**Re-run OAuth if token expires:**
+```bash
+python setup_oauth.py
+```
+
+**Verify service account path (test_sheets.py only):** Separate from OAuth — uses a service account JSON key. Do not confuse with the main app auth.
+
+**Log grep patterns:**
+```bash
+grep "SYNCED"    filepro_sync.log   # Successful syncs with sheet URL
+grep "ERROR"     filepro_sync.log   # Failures
+grep "Webhook"   filepro_sync.log   # Webhook call results
+```
