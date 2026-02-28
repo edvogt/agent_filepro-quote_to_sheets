@@ -46,7 +46,7 @@ CONFIG = {
     
     # FilePro Export Settings
     # $SPOOL = /appl/spool
-    'export_directory': '/appl/spool/QUOTES-SHEETS',
+    'export_directory': '/home/filepro/agent_filepro-quote_to_sheets/exports',
     'file_pattern': 'QUOTE_*.tsv',
 
     # Sync Settings
