@@ -20,6 +20,10 @@ python filepro_sync.py
 
 # Test Google Sheets API connection (uses service account, not OAuth)
 python test_sheets.py
+
+# Manually fix a malformed FilePro JSON file
+./fix_filepro_json.sh QUOTE_12345.json          # fix in place (backup saved as .orig)
+./fix_filepro_json.sh input.json output.json    # fix to new file
 ```
 
 ## Architecture
@@ -32,15 +36,15 @@ Three main components in `filepro_sync.py`:
    - `find_sheet_by_quote_number()` (line 108): Searches existing sheets in target folder
    - `create_or_update_sheet()` (line 126): Main entry point for sheet creation/update
    - `_populate_worksheet()` (line 164): Writes header, line items, and financial summary
-   - `_apply_formatting()` (line 218): Applies colors, bold headers, auto-resize, freeze rows
+   - `_apply_formatting()` (line 218): Applies basic Python-side formatting (colors, bold headers, auto-resize, freeze rows). The Apps Script webhook (`format_quote_sheet.js`) runs afterward and applies the final, more detailed formatting.
 
 2. **QuotationProcessor** (line 283): JSON parsing, quote number extraction from filename, data cleaning with pandas, coordinates sync workflow.
    - `_fix_json_file()` (line 290): Calls `fix_filepro_json.sh` to fix malformed JSON before parsing
-   - `_parse_filepro_json()` (line 323): Regex-based parser for malformed FilePro JSON (fallback)
+   - `_parse_filepro_json()` (line 323): Regex-based parser for malformed FilePro JSON (fallback when `json.load()` fails after fix script)
    - `_convert_filepro_metadata()` (line 423): Transforms FilePro structure to standard format
    - `process_file()` (line 468): Main entry point - fixes JSON, handles trigger files, all formats
 
-3. **QuotationFileHandler** (line 647): Watchdog `FileSystemEventHandler` subclass. Monitors export directory, debounces file creation events (2-second delay), prevents duplicate processing via `self.processing` set.
+3. **QuotationFileHandler** (line 649): Watchdog `FileSystemEventHandler` subclass. Monitors export directory, debounces file creation events (2-second delay), prevents duplicate processing via `self.processing` set.
 
 Supporting files:
 - `setup_oauth.py`: One-time OAuth flow generating `/home/filepro/credentials/token.pickle`
@@ -61,37 +65,32 @@ Two authentication methods exist in this codebase:
 
 `fix_filepro_json.sh` automatically fixes malformed FilePro JSON before processing. Called by `_fix_json_file()` (line 290) in `QuotationProcessor`.
 
-**Fixes applied:**
+**Short-circuit**: If `jq` is available and the file is already valid JSON with a `line_items` key, the script exits immediately without modifying the file.
+
+**Fixes applied (when needed):**
 - Wraps loose line item objects in `"line_items": [...]` array
 - Adds missing commas in totals section
 - Fixes empty `"Tax":` value → `"Tax": null`
 - Removes trailing commas before `]` or `}`
 - Normalizes spacing in numeric values
 
-**Manual usage:**
-```bash
-# Fix in place (creates .orig backup)
-./fix_filepro_json.sh QUOTE_12345.json
-
-# Fix to new file
-./fix_filepro_json.sh input.json output.json
-```
-
 ## Configuration
 
-`CONFIG` dict at `filepro_sync.py:40`:
+`CONFIG` dict at `filepro_sync.py:41`:
 - `token_file`: OAuth token pickle path (default: `/home/filepro/credentials/token.pickle`)
 - `google_drive_folder_id`: Target Drive folder ID (CLIENT-QUOTES: `1SG2iyJ1ej_MUyu4WEJyImWG8iz78A-j0`)
 - `export_directory`: Watch directory (default: `/appl/spool/QUOTES-SHEETS`)
 - `file_pattern`: Glob pattern (default: `QUOTE_*.json`)
-- `json_fix_script`: Path to bash script that fixes malformed JSON (default: `fix_filepro_json.sh`)
+- `json_fix_script`: Absolute path to bash script that fixes malformed JSON (default: `/home/filepro/agent_filepro-quote_to_sheets/fix_filepro_json.sh`)
+- `log_file`: Relative path — `filepro_sync.log` created in the working directory where `filepro_sync.py` is launched
 - `url_log_file`: Log file for sheet URLs (default: `/home/filepro/quote_urls.log`)
-- `archive_directory`: Where processed files move (default: `/home/filepro/exports/archive`)
+- `archive_directory`: Where processed files move (default: `/home/filepro/exports/archive`); archived into `YYYY-MM/` subdirectory
 - `webhook_url`: Apps Script URL for sheet formatting (deployed web app URL)
+- `webhook_timeout`: HTTP timeout in seconds for Apps Script call (default: 30)
 
 ## JSON Format
 
-Filename pattern: `QUOTE_[NUMBER]_[TIMESTAMP].json` (e.g., `QUOTE_12345_20250124_143022.json`) - quote number extracted from second underscore segment via `_extract_quote_number()` (line 594).
+Filename pattern: `QUOTE_[NUMBER]_[TIMESTAMP].json` (e.g., `QUOTE_12345_20250124_143022.json`) - quote number extracted from second underscore segment via `_extract_quote_number()` (line 596).
 
 **Nested format** (code expects `line_items` key):
 ```json
@@ -117,14 +116,16 @@ Filename pattern: `QUOTE_[NUMBER]_[TIMESTAMP].json` (e.g., `QUOTE_12345_20250124
 
 ## Webhook Formatting
 
-After successful sync, the webhook calls `format_quote_sheet.js` (deployed as Google Apps Script web app) to apply professional formatting:
+After successful sync, the webhook calls `format_quote_sheet.js` (deployed as Google Apps Script web app) to apply final professional formatting:
 - Dark blue header with quote number
 - Light blue column headers
 - Alternating row colors for line items
-- Green totals section with currency formatting
+- Green totals section with currency formatting (`$#,##0.00`)
 - Auto-resized columns and frozen header rows
 
-Deploy the script: Apps Script → Deploy → New deployment → Web app → Anyone
+**Deploy the script**: Apps Script → Deploy → New deployment → Web app → Execute as: Me → Who has access: Anyone
+
+**Manual testing**: The web app also accepts GET requests with `?sheet_id=SHEET_ID` for triggering format without a Python sync. The `testFormat()` function in `format_quote_sheet.js` hardcodes a specific sheet ID for in-editor testing.
 
 ## URL Logging
 
@@ -143,7 +144,7 @@ Sheet URLs are logged to `/home/filepro/quote_urls.log` in format:
 
 ## Startup Behavior
 
-On startup, `process_existing_files()` (line 682) processes any files already in the watch directory before starting the watchdog observer. The observer then monitors for new files in real-time.
+On startup, `process_existing_files()` (line 688) processes any files already in the watch directory before starting the watchdog observer. The observer then monitors for new files in real-time.
 
 ## Note on README.md
 
