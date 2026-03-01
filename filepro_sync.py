@@ -581,6 +581,17 @@ class QuotationProcessor:
                 logger.error(f"Could not determine quote number from {file_path}")
                 return False
 
+            # Safety check: TSV content must match the filename quote number.
+            # A mismatch means FilePro exported the wrong record (stale tmp selection).
+            tsv_quote_number = metadata.get('quote_info', {}).get('quote_number', '').strip()
+            if tsv_quote_number and tsv_quote_number != quote_number:
+                logger.error(
+                    f"Quote number mismatch: filename={quote_number}, "
+                    f"TSV content={tsv_quote_number} — FilePro exported the wrong record. "
+                    f"Skipping {file_path.name}."
+                )
+                return False
+
             data = pd.DataFrame(line_items)
             data = self._clean_data(data)
 
