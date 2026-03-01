@@ -24,13 +24,13 @@ python test_sheets.py
 
 ## Architecture
 
-**Data flow**: FilePro watchfolder → `stquote_to_spool.sh` runs `rreport` → TSV dropped in `exports/` → Watchdog detects file → `_parse_tsv_file()` parses → JSON written to disk → GoogleSheetsClient creates/updates Sheet → Webhook formats sheet → URL logged → JSON archived → TSV removed
+**Data flow**: CGI (`quot-edit-sheets-acct`) → `rreport` exports TSV → dropped in `exports/` → Watchdog detects file → `_parse_tsv_file()` parses → JSON written to disk → GoogleSheetsClient creates versioned Sheet → Webhook formats sheet → URL logged → JSON archived → TSV removed → CGI redirects browser to sheet
 
 Three main components in `filepro_sync.py`:
 
 1. **GoogleSheetsClient** (line 123): OAuth token loading/refresh, Sheets CRUD operations, formatting. Uses `gspread` library.
-   - `find_sheet_by_quote_number()`: Searches existing sheets in target folder
-   - `create_or_update_sheet()`: Main entry point for sheet creation/update
+   - `_get_next_version()`: Scans folder for `Quote-{number}-N` sheets and returns the next version number
+   - `create_or_update_sheet()`: Always creates a new versioned sheet named `Quote-{number}-{version}` (e.g. `Quote-88960-3`); never updates an existing sheet
    - `_populate_worksheet()`: Writes header, line items, and financial summary
    - `_apply_formatting()`: Rough Python-side formatting pass (colors, bold headers, auto-resize, freeze row 4). The Apps Script webhook runs afterward as the final formatting pass.
 
@@ -39,7 +39,7 @@ Three main components in `filepro_sync.py`:
    - `process_file()`: Main entry point — parse TSV → write JSON → sync to Sheets → archive JSON → delete TSV
    - `_parse_filepro_json()`, `_convert_filepro_metadata()`, `_fix_json_file()`: **Dead code** — legacy JSON pipeline methods never called in the current TSV flow; kept for reference only
 
-3. **QuotationFileHandler**: Watchdog `FileSystemEventHandler` subclass. Monitors export directory, debounces file creation events (2-second delay), prevents duplicate processing via `self.processing` set.
+3. **QuotationFileHandler**: Watchdog `FileSystemEventHandler` subclass. Monitors export directory, debounces file creation events (2-second delay), prevents duplicate processing via `self.processing` set. File is added to the set **before** the debounce sleep to block concurrent duplicate watchdog events.
 
 Supporting files:
 - `stquote_to_spool.sh`: Called by FilePro watchfolder — sets `TERM=ansi`, `FP=/appl/fp`, `PFSKIPLOCKED=1`, runs `rreport` against `stquote` with `prc.tabexport -R <quote_number>`, writes to `/appl/fpmerge/quote_export.tsv`, then moves to `exports/QUOTE_<N>_<TIMESTAMP>.tsv`
@@ -49,6 +49,26 @@ Supporting files:
 - `format_quote_sheet.js`: Google Apps Script web app for final sheet formatting. `findDataStartRow()` locates the column-header row dynamically; `findTotalsStartRow()` scans from the bottom for "Sub Total".
 - `fix_filepro_json.sh`: Legacy script for malformed JSON (older pipeline, unused).
 - `quote_url_html.sh`: Output sheet URLs in HTML link format
+
+## CGI Script
+
+`/var/www/html/secure/cgi-bin/quot-edit-sheets-acct` — Apache CGI that triggers a quote export and streams progress to the browser.
+
+**Flow:**
+1. Outputs "Creating filepro export file..." immediately (with 4 KB buffer flush so browser renders before rreport runs)
+2. Runs `/appl/bin/rlf` to remove FilePro lockfiles
+3. Runs `rreport stquote -f export-tsv -s tmp` → copies output to `exports/QUOTE_{N}_{TS}.tsv`
+4. Outputs "Success: FilePro generated export File..." + "queued for google sheets processing, stand by..." + spinner gif (125×100 px)
+5. Sleeps 15 seconds for sync + webhook to complete
+6. Greps `filepro_sync.log` for `SYNCED | Quote {N} |` and extracts the URL
+7. Redirects browser to the Google Sheet via `window.location.href`
+
+**Key variables:**
+- `EXPORTS`: `/home/filepro/agent_filepro-quote_to_sheets/exports`
+- `SYNCLOG`: `/home/filepro/agent_filepro-quote_to_sheets/filepro_sync.log`
+- Spinner: `https://acct.ear.net/filepro/gif/circle-spinning-blue-to-black.gif`
+
+**Not in the repo** — lives only at `/var/www/html/secure/cgi-bin/quot-edit-sheets-acct` on the web server.
 
 ## Authentication
 
@@ -92,7 +112,7 @@ After parsing, `process_file()` writes a structured JSON file (`QUOTE_[NUMBER]_[
 
 `CONFIG` dict at `filepro_sync.py:42`:
 - `token_file`: OAuth token pickle path (default: `/home/filepro/credentials/token.pickle`)
-- `google_drive_folder_id`: Target Drive folder ID (CLIENT-QUOTES: `1SG2iyJ1ej_MUyu4WEJyImWG8iz78A-j0`)
+- `google_drive_folder_id`: Target Drive folder ID (CLIENT_QUOTES: `1fRcg-tMAOkt81KVbI4h56zZFI7Hu6him`)
 - `export_directory`: Watch directory (default: `/home/filepro/agent_filepro-quote_to_sheets/exports`)
 - `file_pattern`: Glob pattern (default: `QUOTE_*.tsv`)
 - `log_file`: Relative path — `filepro_sync.log` created in the working directory where `filepro_sync.py` is launched
@@ -136,6 +156,21 @@ On startup, `process_existing_files()` processes any `QUOTE_*.tsv` files already
 ## FilePro Source Database
 
 Quote data comes from `/appl/filepro/stquote/`. The TSV export is driven by `/appl/filepro/stquote/prc.tabexport` which maps stquote fields to the 83-column layout above.
+
+## Service Management
+
+The sync runs as a systemd service (`filepro-sync.service`), enabled and auto-restarting.
+
+```bash
+# After code changes
+sudo systemctl restart filepro-sync
+
+# Check status
+sudo systemctl status filepro-sync
+
+# Live log via journald
+sudo journalctl -u filepro-sync -f
+```
 
 ## Debugging & Operations
 
