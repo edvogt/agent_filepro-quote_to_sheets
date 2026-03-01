@@ -36,7 +36,7 @@ Three main components in `filepro_sync.py`:
 
 2. **QuotationProcessor** (line 317): TSV parsing, quote number extraction, data cleaning with pandas, coordinates sync workflow.
    - `_parse_tsv_file()`: Reads tab-delimited export, maps 83 columns to metadata and up to 10 line item slots
-   - `process_file()`: Main entry point — parse TSV → write JSON → sync to Sheets → archive JSON → delete TSV
+   - `process_file()`: Main entry point — parse TSV → write JSON → sync to Sheets → archive JSON → delete TSV. Includes a quote number mismatch guard: if the TSV content's quote number doesn't match the filename's quote number, the file is skipped with an error (prevents wrong-record syncs from stale FilePro tmp files).
    - `_parse_filepro_json()`, `_convert_filepro_metadata()`, `_fix_json_file()`: **Dead code** — legacy JSON pipeline methods never called in the current TSV flow; kept for reference only
 
 3. **QuotationFileHandler**: Watchdog `FileSystemEventHandler` subclass. Monitors export directory, debounces file creation events (2-second delay), prevents duplicate processing via `self.processing` set. File is added to the set **before** the debounce sleep to block concurrent duplicate watchdog events.
@@ -56,12 +56,13 @@ Supporting files:
 
 **Flow:**
 1. Outputs "Creating filepro export file..." immediately (with 4 KB buffer flush so browser renders before rreport runs)
-2. Runs `/appl/bin/rlf` to remove FilePro lockfiles
-3. Runs `rreport stquote -f export-tsv -s tmp` → copies output to `exports/QUOTE_{N}_{TS}.tsv`
-4. Outputs "Success: FilePro generated export File..." + "queued for google sheets processing, stand by..." + spinner gif (125×100 px)
-5. Sleeps 15 seconds for sync + webhook to complete
-6. Greps `filepro_sync.log` for `SYNCED | Quote {N} |` and extracts the URL
-7. Redirects browser to the Google Sheet via `window.location.href`
+2. Runs `/appl/bin/rlf` to remove FilePro lockfiles; removes stale `/appl/spool/QUOTES-SHEETS-tmp.tsv`
+3. Runs `rreport stquote -f export-tsv -R "$STRING1" -V selquote -A` (key-based `-R` avoids stale tmp selection; stderr → `/tmp/rreport-cgi.log`) → writes to `/appl/spool/QUOTES-SHEETS-tmp.tsv`
+4. Copies `/appl/spool/QUOTES-SHEETS-tmp.tsv` → `$EXPORTS/QUOTE_{N}_{TS}.tsv`
+5. Outputs "Success: FilePro generated export File..." + "queued for google sheets processing, stand by..." + spinner gif (125×100 px)
+6. Sleeps 15 seconds for sync + webhook to complete
+7. Greps `filepro_sync.log` for `SYNCED | Quote {N} |` and extracts the URL
+8. Redirects browser to the Google Sheet via `window.location.href`
 
 **Key variables:**
 - `EXPORTS`: `/home/filepro/agent_filepro-quote_to_sheets/exports`
@@ -118,7 +119,7 @@ After parsing, `process_file()` writes a structured JSON file (`QUOTE_[NUMBER]_[
 - `log_file`: Relative path — `filepro_sync.log` created in the working directory where `filepro_sync.py` is launched
 - `url_log_file`: Log file for sheet URLs (default: `/home/filepro/quote_urls.log`)
 - `archive_directory`: Where processed JSON files move (default: `/home/filepro/exports/archive`); archived into `YYYY-MM/` subdirectory
-- `webhook_url`: Apps Script URL for sheet formatting (deployed web app URL)
+- `webhook_url`: Apps Script URL for sheet formatting. Currently set to the active deployed web app URL. Set to `''` to disable (skips webhook silently).
 - `webhook_timeout`: HTTP timeout in seconds for Apps Script call (default: 30)
 
 ## Webhook Formatting
