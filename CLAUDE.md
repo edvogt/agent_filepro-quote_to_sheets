@@ -68,7 +68,7 @@ Supporting files:
 - `SYNCLOG`: `/home/filepro/agent_filepro-quote_to_sheets/filepro_sync.log`
 - Spinner: `https://acct.ear.net/filepro/gif/circle-spinning-blue-to-black.gif`
 
-**Not in the repo** — lives only at `/var/www/html/secure/cgi-bin/quot-edit-sheets-acct` on the web server.
+**In the repo** as `quot-edit-sheets-acct`. Deploy path: `/var/www/html/secure/cgi-bin/quot-edit-sheets-acct`. After edits: `cp quot-edit-sheets-acct /var/www/html/secure/cgi-bin/`
 
 ## Authentication
 
