@@ -64,7 +64,7 @@ CONFIG = {
     'url_log_file': '/home/filepro/quote_urls.log',
 
     # Webhook (Google Apps Script Web App URL)
-    'webhook_url': 'https://script.google.com/macros/s/AKfycbyr34ZZ5h7kZpUtJwu7Pn_O2XxUq3FfW3Wb027PCbNSUaav8jnEgbxU-YbpAMJJlGcK/exec',
+    'webhook_url': 'https://script.google.com/macros/s/AKfycby26E0OtbeNh33h5yzk1lpjOJacbMkW63EskG8W-NTBSRLFO0Sg3SOItkOZAfjCk-Z-XQ/exec',
     'webhook_timeout': 30  # seconds
 }
 

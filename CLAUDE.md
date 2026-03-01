@@ -119,7 +119,7 @@ After parsing, `process_file()` writes a structured JSON file (`QUOTE_[NUMBER]_[
 - `log_file`: Relative path — `filepro_sync.log` created in the working directory where `filepro_sync.py` is launched
 - `url_log_file`: Log file for sheet URLs (default: `/home/filepro/quote_urls.log`)
 - `archive_directory`: Where processed JSON files move (default: `/home/filepro/exports/archive`); archived into `YYYY-MM/` subdirectory
-- `webhook_url`: Apps Script URL for sheet formatting. Currently set to the active deployed web app URL. Set to `''` to disable (skips webhook silently).
+- `webhook_url`: Apps Script URL for sheet formatting. Current deployment: `https://script.google.com/macros/s/AKfycby26E0OtbeNh33h5yzk1lpjOJacbMkW63EskG8W-NTBSRLFO0Sg3SOItkOZAfjCk-Z-XQ/exec`. Set to `''` to disable (skips webhook silently). **Note:** when the separate AI agent redeploys the Apps Script, update this URL to the new deployment ID.
 - `webhook_timeout`: HTTP timeout in seconds for Apps Script call (default: 30)
 
 ## Webhook Formatting
