@@ -1,0 +1,79 @@
+#!/bin/sh
+# Customer quote print - Direct filePro output to spool
+# rev: Jan 2026
+
+# --- Environment & Inputs ---
+umask 000
+TERM=ansi; export TERM
+FP=/appl/fp; export FP
+STRING1=$(printf '%s' "$*" | tr -cd '[:alnum:]_-')
+
+if [ -z "$STRING1" ]; then
+  echo "<p>Error: No quote number provided</p>"
+  exit 1
+fi
+
+# --- Define Output Destination ---
+EXPORTS="/home/filepro/agent_filepro-quote_to_sheets/exports"
+SYNCLOG="/home/filepro/agent_filepro-quote_to_sheets/filepro_sync.log"
+TS=$(date '+%Y%m%d_%H%M%S')
+OUTFILE="$EXPORTS/QUOTE_${STRING1}_${TS}.tsv"
+
+mkdir -p "$EXPORTS"
+
+# --- Output opening HTML immediately so browser shows first message ---
+cat <<HTML
+<html>
+<head><title>Quote $STRING1</title></head>
+<body>
+<p>Creating filepro export file...</p>
+<!--
+$(printf '%4000s' | tr ' ' '.')
+-->
+HTML
+
+# --- Execute rreport ---
+# Use prc.tabexport with -R to select the specific quote by key, avoiding
+# stale tmp selection files that caused wrong-record exports (rev: Mar 2026)
+/appl/bin/rlf # remove lockfiles
+rm -f /appl/fpmerge/quote_export.tsv
+$FP/rreport stquote -f tabexport -R "$STRING1" -V selquote -A >/dev/null 2>&1
+cp /appl/fpmerge/quote_export.tsv "$OUTFILE"
+
+
+### $FP/rreport sel -s rec2  -R "$STRING1" -f quote -p $FILE/stquote/sel.quoteu -U >/dev/null 2>&1
+### rm -rf /appl/filepro/sel/lockfile
+### #"$FP/rreport" stquote -f quote-json -Y bogus -V sortassc \
+### #  -R "$STRING1" -U -A -p "$OUTFILE" >/dev/null 2>&1
+### "$FP/rreport" stquote -f quote-json -Y bogus -S quoteu -U \
+### -R "$STRING1" -U -p "$OUTFILE" >/dev/null 2>&1
+
+# --- Result Check ---
+if [ ! -s "$OUTFILE" ]; then
+  echo "<p>Error: FilePro failed to generate output for Quote $STRING1</p>"
+  echo "</body></html>"
+  exit 1
+fi
+
+# --- Continue with success messages and spinner ---
+cat <<HTML
+<p>Success: FilePro generated export File...</p>
+<p>Quote $STRING1 queued for google sheets processing, stand by...</p>
+<img src="https://acct.ear.net/filepro/gif/circle-spinning-blue-to-black.gif" alt="Processing..." width="125" height="100">
+<!--
+$(printf '%4000s' | tr ' ' '.')
+-->
+HTML
+
+# --- Wait for sync ---
+sleep 15
+URL=$(grep "SYNCED | Quote $STRING1 |" "$SYNCLOG" | tail -1 | awk -F' | ' '{print $NF}')
+
+# --- Redirect to sheet or show error ---
+if [ -n "$URL" ]; then
+  echo "<script>window.location.href='$URL';</script>"
+else
+  echo "<p>Sync timed out. URL not yet available — check <code>/home/filepro/quote_urls.log</code>.</p>"
+fi
+
+echo "</body></html>"
