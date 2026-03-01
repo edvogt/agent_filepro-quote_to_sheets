@@ -29,7 +29,7 @@ export PFSKIPLOCKED=1
 rm -f "$FPMERGE_FILE"
 
 # Run FilePro export for the specific quote record
-/appl/fp/rreport stquote -f prc.tabexport -R "$QUOTE_NUM" -A >/dev/null 2>&1
+/appl/fp/rreport stquote -f tabexport -R "$QUOTE_NUM" -A >/dev/null 2>&1
 
 if [[ ! -f "$FPMERGE_FILE" ]]; then
     echo "Error: rreport did not produce $FPMERGE_FILE for quote $QUOTE_NUM" >&2
