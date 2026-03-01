@@ -1,15 +1,17 @@
-/**
- * FilePro Quote Sheet Formatter - Web App
- * Deployed as web app, called by filepro_sync.py after each sync
- *
- * Deploy:
- *   1. Deploy → New deployment → Web app
- *   2. Execute as: Me
- *   3. Who has access: Anyone
- *   4. Copy the deployment URL to filepro_sync.py CONFIG['webhook_url']
- */
+/****************************************************
+ * FilePro Quote Sheet Formatter - Version 1.1.0
+ * - Deployed as Google Apps Script web app
+ * - Called by filepro_sync.py after each sheet sync
+ * - Styling consistent with EAR tools suite
+ * - Conservative syntax (var, no optional chaining)
+ * - All setBorder() calls use 8 parameters
+ ****************************************************/
 
-// Web app entry point - receives POST from Python
+var APP_VERSION = '1.1.0';
+
+/****************************************************
+ * WEB APP ENTRY POINTS
+ ****************************************************/
 function doPost(e) {
   try {
     var data = JSON.parse(e.postData.contents);
@@ -22,7 +24,7 @@ function doPost(e) {
 
     var ss = SpreadsheetApp.openById(sheetId);
     var sheet = ss.getSheets()[0];
-    formatSheet(sheet);
+    formatSheet(sheet, quoteNumber);
 
     return jsonResponse({status: 'ok', quote_number: quoteNumber, formatted: true});
 
@@ -38,13 +40,16 @@ function doGet(e) {
     try {
       var ss = SpreadsheetApp.openById(sheetId);
       var sheet = ss.getSheets()[0];
-      formatSheet(sheet);
+      formatSheet(sheet, '');
       return jsonResponse({status: 'ok', formatted: true});
     } catch (error) {
       return jsonResponse({status: 'error', message: error.toString()});
     }
   }
-  return jsonResponse({status: 'ready', message: 'FilePro Quote Formatter. POST with sheet_url or sheet_id.'});
+  return jsonResponse({
+    status: 'ready',
+    message: 'FilePro Quote Formatter v' + APP_VERSION + '. POST with sheet_url or sheet_id.'
+  });
 }
 
 function jsonResponse(obj) {
@@ -58,118 +63,153 @@ function extractSheetId(url) {
   return match ? match[1] : null;
 }
 
-// Manual test function
+// Manual test — update sheet ID before running in Apps Script editor
 function testFormat() {
   var ss = SpreadsheetApp.openById('1NqwkGRrJ-R3gZq3A0ibupJmxPHclQgLxrwAWQ1R8BKc');
   var sheet = ss.getSheets()[0];
-  formatSheet(sheet);
+  formatSheet(sheet, '');
 }
 
-/**
- * Main formatting function
- */
-function formatSheet(sheet) {
+/****************************************************
+ * MAIN FORMATTING FUNCTION
+ ****************************************************/
+function formatSheet(sheet, quoteNumber) {
   var lastRow = sheet.getLastRow();
   var lastCol = sheet.getLastColumn();
 
   if (lastRow < 2) return;
 
-  // Colors
-  var headerBlue = '#1F4F76';
-  var lightBlue = '#D6E9F4';
-  var white = '#FFFFFF';
-  var lightGray = '#F5F5F5';
-  var borderColor = '#CCCCCC';
-  var totalsGreen = '#E8F5E9';
+  // Colors — consistent with EAR tools suite
+  var earBlue       = '#1a73e8';
+  var lightBlue     = '#d4e6f1';
+  var white         = '#FFFFFF';
+  var rowAlt        = '#f8f9fa';
+  var totalRowGreen = '#4CAF50';
+  var borderColor   = '#CCCCCC';
 
-  // Header section (Rows 1-2)
-  var headerRange = sheet.getRange('A1:F2');
-  headerRange.setBackground(headerBlue);
+  var dataStartRow = findDataStartRow(sheet);
+  var totalsRow    = findTotalsStartRow(sheet);
+  var dataEndRow   = (totalsRow > 0) ? totalsRow - 1 : lastRow;
+
+  formatHeaderSection(sheet, lastCol, earBlue, white);
+  formatColumnHeaders(sheet, dataStartRow, lastCol, earBlue, white, borderColor);
+  formatLineItems(sheet, dataStartRow, dataEndRow, lastCol, white, rowAlt, borderColor);
+  formatTotalsSection(sheet, totalsRow, lastRow, lastCol, lightBlue, totalRowGreen, white, borderColor);
+  applyFinalFormatting(sheet, dataStartRow, lastCol);
+}
+
+/****************************************************
+ * HEADER SECTION (rows 1–2: QUOTATION + date)
+ ****************************************************/
+function formatHeaderSection(sheet, lastCol, earBlue, white) {
+  var headerRange = sheet.getRange(1, 1, 2, lastCol);
+  headerRange.setBackground(earBlue);
   headerRange.setFontColor(white);
   headerRange.setFontWeight('bold');
   headerRange.setFontSize(12);
 
-  sheet.getRange('A1:B1').merge();
-  sheet.getRange('A1').setFontSize(16);
+  try { sheet.getRange(1, 1, 1, lastCol).merge(); } catch (e) {}
+  sheet.getRange(1, 1).setFontSize(16).setHorizontalAlignment('left');
+}
 
-  // Customer info section
-  var customerRange = sheet.getRange('A3:B6');
-  customerRange.setFontSize(10);
-  sheet.getRange('A3:A6').setFontWeight('bold');
+/****************************************************
+ * COLUMN HEADER ROW
+ ****************************************************/
+function formatColumnHeaders(sheet, dataStartRow, lastCol, earBlue, white, borderColor) {
+  if (dataStartRow <= 0) return;
 
-  // Find data rows
-  var dataStartRow = findDataStartRow(sheet);
-  var totalsRow = findTotalsStartRow(sheet);
-  var dataEndRow = (totalsRow > 0) ? totalsRow - 1 : lastRow;
+  sheet.getRange(dataStartRow, 1, 1, lastCol)
+    .setBackground(earBlue)
+    .setFontColor(white)
+    .setFontWeight('bold')
+    .setHorizontalAlignment('center')
+    .setBorder(true, true, true, true, true, true, borderColor, SpreadsheetApp.BorderStyle.SOLID);
+}
 
-  // Column headers
-  if (dataStartRow > 0) {
-    var headerRow = sheet.getRange(dataStartRow, 1, 1, lastCol);
-    headerRow.setBackground(lightBlue);
-    headerRow.setFontWeight('bold');
-    headerRow.setHorizontalAlignment('center');
-    headerRow.setBorder(true, true, true, true, true, true, borderColor, SpreadsheetApp.BorderStyle.SOLID);
+/****************************************************
+ * LINE ITEM ROWS — alternating colors
+ ****************************************************/
+function formatLineItems(sheet, dataStartRow, dataEndRow, lastCol, white, rowAlt, borderColor) {
+  if (dataStartRow <= 0 || dataEndRow <= dataStartRow) return;
+
+  var i;
+  for (i = dataStartRow + 1; i <= dataEndRow; i++) {
+    var bg = ((i - dataStartRow) % 2 === 0) ? rowAlt : white;
+    sheet.getRange(i, 1, 1, lastCol)
+      .setBackground(bg)
+      .setBorder(true, true, true, true, false, false, borderColor, SpreadsheetApp.BorderStyle.SOLID);
   }
 
-  // Line items with alternating colors
-  if (dataStartRow > 0 && dataEndRow > dataStartRow) {
-    var i;
-    for (i = dataStartRow + 1; i <= dataEndRow; i++) {
-      var rowRange = sheet.getRange(i, 1, 1, lastCol);
-      if ((i - dataStartRow) % 2 === 0) {
-        rowRange.setBackground(lightGray);
-      } else {
-        rowRange.setBackground(white);
-      }
-      rowRange.setBorder(null, true, null, true, false, false, borderColor, SpreadsheetApp.BorderStyle.SOLID);
-    }
-
-    // Format price columns as currency
-    if (lastCol >= 5) {
-      var priceRange = sheet.getRange(dataStartRow + 1, 4, dataEndRow - dataStartRow, 2);
-      priceRange.setNumberFormat('$#,##0.00');
-      priceRange.setHorizontalAlignment('right');
-    }
-
-    // Format qty column
-    var qtyRange = sheet.getRange(dataStartRow + 1, 1, dataEndRow - dataStartRow, 1);
-    qtyRange.setHorizontalAlignment('center');
+  // Currency format on price columns (4 & 5)
+  if (lastCol >= 5) {
+    sheet.getRange(dataStartRow + 1, 4, dataEndRow - dataStartRow, 2)
+      .setNumberFormat('$#,##0.00')
+      .setHorizontalAlignment('right');
   }
 
-  // Totals section
-  if (totalsRow > 0) {
-    var totalsRange = sheet.getRange(totalsRow, 1, lastRow - totalsRow + 1, 2);
-    totalsRange.setBackground(totalsGreen);
-    totalsRange.setFontWeight('bold');
-    totalsRange.setBorder(true, true, true, true, true, true, borderColor, SpreadsheetApp.BorderStyle.SOLID);
+  // Qty column — center
+  sheet.getRange(dataStartRow + 1, 1, dataEndRow - dataStartRow, 1)
+    .setHorizontalAlignment('center');
+}
 
-    var totalsAmounts = sheet.getRange(totalsRow, 2, lastRow - totalsRow + 1, 1);
-    totalsAmounts.setNumberFormat('$#,##0.00');
-    totalsAmounts.setHorizontalAlignment('right');
+/****************************************************
+ * TOTALS SECTION (Sub Total / Tax / Shipping / TOTAL)
+ ****************************************************/
+function formatTotalsSection(sheet, totalsRow, lastRow, lastCol, lightBlue, totalRowGreen, white, borderColor) {
+  if (totalsRow <= 0) return;
 
-    // Highlight TOTAL row
-    var j;
-    for (j = totalsRow; j <= lastRow; j++) {
-      var label = sheet.getRange(j, 1).getValue().toString().toUpperCase();
-      if (label === 'TOTAL' || label.indexOf('TOTAL') === 0) {
-        var totalRowRange = sheet.getRange(j, 1, 1, 2);
-        totalRowRange.setBackground('#4CAF50');
-        totalRowRange.setFontColor(white);
-        totalRowRange.setFontSize(12);
-      }
+  // Sub Total, Tax, Shipping rows — light blue
+  sheet.getRange(totalsRow, 1, lastRow - totalsRow, 2)
+    .setBackground(lightBlue)
+    .setFontWeight('bold')
+    .setBorder(true, true, true, true, true, true, borderColor, SpreadsheetApp.BorderStyle.SOLID);
+
+  sheet.getRange(totalsRow, 2, lastRow - totalsRow, 1)
+    .setNumberFormat('$#,##0.00')
+    .setHorizontalAlignment('right');
+
+  // TOTAL row — solid green highlight
+  var j;
+  for (j = totalsRow; j <= lastRow; j++) {
+    var label = sheet.getRange(j, 1).getValue().toString().toUpperCase();
+    if (label === 'TOTAL' || label.indexOf('TOTAL') === 0) {
+      sheet.getRange(j, 1, 1, 2)
+        .setBackground(totalRowGreen)
+        .setFontColor(white)
+        .setFontWeight('bold')
+        .setFontSize(12)
+        .setBorder(true, true, true, true, true, true, borderColor, SpreadsheetApp.BorderStyle.SOLID);
     }
   }
+}
 
-  // Auto-fit columns
+/****************************************************
+ * FINAL FORMATTING — font, gridlines, freeze, resize
+ ****************************************************/
+function applyFinalFormatting(sheet, dataStartRow, lastCol) {
+  // Roboto font across all content
+  var lr = sheet.getLastRow();
+  var lc = sheet.getLastColumn();
+  if (lr && lc) {
+    sheet.getRange(1, 1, lr, lc).setFontFamily('Roboto');
+  }
+
+  // Hide gridlines
+  sheet.setHiddenGridlines(true);
+
+  // Auto-resize all columns
   var c;
   for (c = 1; c <= lastCol; c++) {
     sheet.autoResizeColumn(c);
   }
 
-  // Freeze header rows
+  // Freeze through column header row
   sheet.setFrozenRows(dataStartRow > 0 ? dataStartRow : 4);
 }
 
+/****************************************************
+ * ROW FINDERS
+ ****************************************************/
 function findDataStartRow(sheet) {
   var data = sheet.getDataRange().getValues();
   var i;
