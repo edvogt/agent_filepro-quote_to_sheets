@@ -36,9 +36,8 @@ HTML
 # Use prc.tabexport with -R to select the specific quote by key, avoiding
 # stale tmp selection files that caused wrong-record exports (rev: Mar 2026)
 /appl/bin/rlf # remove lockfiles
-rm -f /appl/fpmerge/quote_export.tsv
-$FP/rreport stquote -f tabexport -R "$STRING1" -V selquote -A >/dev/null 2>&1
-cp /appl/fpmerge/quote_export.tsv "$OUTFILE"
+$FP/rreport stquote -f export-tsv -R "$STRING1" -V selquote -A >/dev/null 2>&1
+cp /tmp/stquote-tmp.tsv "$OUTFILE"
 
 
 ### $FP/rreport sel -s rec2  -R "$STRING1" -f quote -p $FILE/stquote/sel.quoteu -U >/dev/null 2>&1
