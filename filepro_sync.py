@@ -42,7 +42,7 @@ from watchdog.events import FileSystemEventHandler
 CONFIG = {
     # Google Authentication (OAuth)
     'token_file': '/home/filepro/credentials/token.pickle',
-    'google_drive_folder_id': '1SG2iyJ1ej_MUyu4WEJyImWG8iz78A-j0',  # CLIENT-QUOTES folder
+    'google_drive_folder_id': '1fRcg-tMAOkt81KVbI4h56zZFI7Hu6him',  # CLIENT_QUOTES folder
     
     # FilePro Export Settings
     # $SPOOL = /appl/spool
@@ -139,60 +139,44 @@ class GoogleSheetsClient:
         self.client = gspread.authorize(creds)
         logger.info("Google Sheets client initialized successfully")
     
-    def find_sheet_by_quote_number(self, quote_number: str) -> Optional[gspread.Spreadsheet]:
-        """Find existing sheet by quotation number"""
+    def _get_next_version(self, quote_number: str) -> int:
+        """Scan folder for Quote-{quote_number}-N sheets and return the next version number."""
         try:
-            # Search for sheets in the target folder
-            spreadsheets = self.client.list_spreadsheet_files(
-                folder_id=self.folder_id
-            )
-            
-            target_name = f"{CONFIG['sheet_prefix']} {quote_number}"
+            spreadsheets = self.client.list_spreadsheet_files(folder_id=self.folder_id)
+            prefix = f"Quote-{quote_number}-"
+            max_version = 0
             for sheet in spreadsheets:
-                if sheet['name'] == target_name:
-                    return self.client.open_by_key(sheet['id'])
-            
-            return None
+                name = sheet['name']
+                if name.startswith(prefix):
+                    try:
+                        version = int(name[len(prefix):])
+                        if version > max_version:
+                            max_version = version
+                    except ValueError:
+                        pass
+            return max_version + 1
         except Exception as e:
-            logger.error(f"Error searching for sheet {quote_number}: {e}")
-            return None
-    
+            logger.error(f"Error checking versions for quote {quote_number}: {e}")
+            return 1
+
     def create_or_update_sheet(self, quote_number: str, data: pd.DataFrame, metadata: dict = None) -> tuple:
-        """Create new sheet or update existing one. Returns (success, sheet_url)"""
+        """Create a new versioned sheet (Quote-{number}-{version}). Returns (success, sheet_url)"""
         try:
-            sheet_name = f"{CONFIG['sheet_prefix']} {quote_number}"
+            version = self._get_next_version(quote_number)
+            sheet_name = f"Quote-{quote_number}-{version}"
 
-            # Check if sheet exists
-            existing_sheet = self.find_sheet_by_quote_number(quote_number)
+            logger.info(f"Creating new sheet: {sheet_name}")
+            spreadsheet = self.client.create(sheet_name, folder_id=self.folder_id)
+            worksheet = spreadsheet.sheet1
 
-            if existing_sheet:
-                logger.info(f"Updating existing sheet: {sheet_name}")
-                worksheet = existing_sheet.sheet1
-                spreadsheet = existing_sheet
-
-                # Clear existing content
-                worksheet.clear()
-            else:
-                logger.info(f"Creating new sheet: {sheet_name}")
-
-                # Create new spreadsheet
-                spreadsheet = self.client.create(
-                    sheet_name,
-                    folder_id=self.folder_id
-                )
-                worksheet = spreadsheet.sheet1
-
-            # Write data to sheet
             self._populate_worksheet(worksheet, quote_number, data, metadata)
-
-            # Apply formatting
             self._apply_formatting(worksheet)
 
             logger.info(f"Successfully synced quotation {quote_number}")
             return True, spreadsheet.url
 
         except Exception as e:
-            logger.error(f"Error creating/updating sheet {quote_number}: {e}")
+            logger.error(f"Error creating sheet {quote_number}: {e}")
             return False, None
     
     def _populate_worksheet(self, worksheet: gspread.Worksheet,
@@ -623,13 +607,11 @@ class QuotationProcessor:
 
             if success and sheet_url:
                 logger.info(f"SYNCED | Quote {quote_number} | {sheet_url}")
-                logger.info("=" * 60)
-                logger.info(f"  QUOTE {quote_number} SYNCED SUCCESSFULLY")
-                logger.info(f"  {sheet_url}")
-                logger.info("=" * 60)
                 url_log = Path(CONFIG.get('url_log_file', '/home/filepro/quote_urls.log'))
                 with open(url_log, 'a') as f:
                     f.write(f"{datetime.now().isoformat()} | Quote {quote_number} | {sheet_url}\n")
+                print(f"  Quote {quote_number} synced successfully", flush=True)
+                print(f"    {sheet_url}", flush=True)
                 call_webhook(quote_number, sheet_url)
 
             # Archive JSON, remove TSV
@@ -715,20 +697,20 @@ class QuotationFileHandler(FileSystemEventHandler):
         if not file_path.match(CONFIG['file_pattern']):
             return
         
-        # Avoid duplicate processing
+        # Avoid duplicate processing — add to set before sleep so concurrent
+        # events for the same file are blocked while we wait for the write to finish
         if str(file_path) in self.processing:
             return
-        
-        # Wait for file to be fully written
-        time.sleep(2)
-
-        # Check file still exists (may have been processed by another event)
-        if not file_path.exists():
-            return
-
-        # Process the file
         self.processing.add(str(file_path))
+
         try:
+            # Wait for file to be fully written
+            time.sleep(2)
+
+            # Check file still exists (may have been processed by another event)
+            if not file_path.exists():
+                return
+
             self.processor.process_file(file_path)
         finally:
             self.processing.discard(str(file_path))
