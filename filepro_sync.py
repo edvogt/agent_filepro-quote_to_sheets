@@ -64,7 +64,7 @@ CONFIG = {
     'url_log_file': '/home/filepro/quote_urls.log',
 
     # Webhook (Google Apps Script Web App URL)
-    'webhook_url': 'https://script.google.com/macros/s/AKfycby26E0OtbeNh33h5yzk1lpjOJacbMkW63EskG8W-NTBSRLFO0Sg3SOItkOZAfjCk-Z-XQ/exec',
+    'webhook_url': 'https://script.google.com/macros/s/AKfycbxkC58mywofLZ0jqsPAawrVv_SCf0thQqKNZswSfpZ4TVRAjQFWQyxMgHyWhUlFe4DMhw/exec',
     'webhook_timeout': 30  # seconds
 }
 
@@ -262,17 +262,17 @@ class GoogleSheetsClient:
 # ============================================================================
 # WEBHOOK CALLER
 # ============================================================================
-def call_webhook(quote_number: str, sheet_url: str) -> bool:
-    """Call Apps Script webhook after successful sync"""
+def call_webhook(quote_number: str, json_data: dict) -> Optional[str]:
+    """Call Apps Script webhook — creates new sheet, returns sheet_url or None on failure"""
     if not CONFIG.get('webhook_url'):
-        return True  # No webhook configured, skip
+        logger.warning("No webhook_url configured — skipping webhook")
+        return None
 
     try:
-        payload = json.dumps({
-            'quote_number': quote_number,
-            'sheet_url': sheet_url,
-            'timestamp': datetime.now().isoformat()
-        }).encode('utf-8')
+        full_payload = dict(json_data)  # copy quote_info, customer, financial_summary, line_items
+        full_payload['quote_number'] = quote_number
+        full_payload['timestamp']    = datetime.now().isoformat()
+        payload = json.dumps(full_payload).encode('utf-8')
 
         req = urllib.request.Request(
             CONFIG['webhook_url'],
@@ -282,18 +282,24 @@ def call_webhook(quote_number: str, sheet_url: str) -> bool:
         )
 
         with urllib.request.urlopen(req, timeout=CONFIG['webhook_timeout']) as response:
-            logger.info(f"Webhook called successfully for quote {quote_number}")
-            return True
+            body = response.read().decode('utf-8')
+            resp_json = json.loads(body)
+            sheet_url = resp_json.get('sheet_url', '')
+            if sheet_url:
+                logger.info(f"Webhook created new sheet for quote {quote_number}: {sheet_url}")
+            else:
+                logger.warning(f"Webhook succeeded but no sheet_url returned for quote {quote_number}")
+            return sheet_url or None
 
     except urllib.error.HTTPError as e:
         logger.error(f"Webhook HTTP error for quote {quote_number}: {e.code} {e.reason}")
-        return False
+        return None
     except urllib.error.URLError as e:
         logger.error(f"Webhook URL error for quote {quote_number}: {e.reason}")
-        return False
+        return None
     except Exception as e:
         logger.error(f"Webhook error for quote {quote_number}: {e}")
-        return False
+        return None
 
 # ============================================================================
 # FILE PROCESSOR
@@ -306,215 +312,234 @@ class QuotationProcessor:
         self._quote_metadata = None
 
     def _parse_tsv_file(self, file_path: Path) -> tuple[List[Dict], Dict[str, Any]]:
-        """Parse a FilePro tab-delimited quote export into (line_items, metadata)."""
-        with open(file_path, 'r') as f:
-            reader = csv.reader(f, delimiter='\t')
-            rows = [row for row in reader if any(field.strip() for field in row)]
+        """Parse FilePro TSV export using DELIMITED-ITEM-SECTION sentinels.
 
-        if not rows:
+        TSV format (one row per quote page):
+          Header section  - cols 0-71, fixed field positions
+          Item sections   - groups of 11 cols each:
+                            col+0  DELIMITED-ITEM-SECTION  (sentinel)
+                            col+1  item_num
+                            col+2  qty_ordered
+                            col+3  price
+                            col+4  total
+                            col+5  shipped
+                            col+6  qty_to_ship
+                            col+7  description
+                            col+8  cost
+                            col+9  extension
+                            col+10 new_inv_desc
+
+        Multiple rows may exist for the same quote (one per page).
+        Header data is taken from the first (lowest page number) row.
+        Line items are collected across all pages.
+
+        Service items have item_num starting with '#' - these are
+        preserved with type='service'. Items with blank item_num are skipped.
+        """
+
+        DELIM         = 'DELIMITED-ITEM-SECTION'
+        ITEM_NUM      = 1
+        ITEM_QTY      = 2
+        ITEM_PRICE    = 3
+        ITEM_TOTAL    = 4
+        ITEM_SHIPPED  = 5
+        ITEM_QSHIP    = 6
+        ITEM_DESC     = 7
+        ITEM_COST     = 8
+        ITEM_EXT      = 9
+        ITEM_NEWDESC  = 10
+
+        # Header column positions (0-based)
+        H_QUOTE_NUM    =  0
+        H_PAGE_NUM     =  1
+        H_INVOICE_NUM  =  2
+        H_CUST_PO      =  3
+        H_PROFIT_CTR   =  4
+        H_TERMS        =  7
+        H_QUOTE_DATE   = 10
+        H_SUBTOTAL     = 17
+        H_FREIGHT_IN   = 18
+        H_FREIGHT_OUT  = 19
+        H_TOTAL        = 20
+        H_TAX          = 22
+        H_SALESPERSON  = 24
+        H_SHIP_VIA     = 29
+        H_COMPANY      = 39
+        H_BILL_1       = 40
+        H_BILL_2       = 41
+        H_BILL_3       = 42
+        H_BILL_4       = 43
+        H_BILL_5       = 44
+        H_SHIP_1       = 45
+        H_SHIP_2       = 46
+        H_SHIP_3       = 47
+        H_BILL_CONTACT = 57
+        H_TAX_CODE     = 58
+        H_STATUS       = 59
+        H_SHIP_COMPANY = 63
+        H_SHIP_CONTACT = 64
+        H_ECOM_EMAIL   = 65
+
+        def col(row, idx, default=''):
+            """Safe column accessor."""
+            try:
+                return row[idx].strip() if row[idx] else default
+            except IndexError:
+                return default
+
+        def to_float(val, default=0.0):
+            """Convert string to float safely."""
+            if not val:
+                return default
+            try:
+                return float(val.replace(',', ''))
+            except (ValueError, AttributeError):
+                return default
+
+        # Read and group all rows by quote number
+        rows_by_quote = {}
+        try:
+            with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
+                for raw_line in f:
+                    row = raw_line.rstrip('\n').split('\t')
+                    if not row or not row[0]:
+                        continue
+                    qnum = row[0].strip()
+                    if not qnum:
+                        continue
+                    if qnum not in rows_by_quote:
+                        rows_by_quote[qnum] = []
+                    rows_by_quote[qnum].append(row)
+        except Exception as e:
+            logger.error(f"Error reading TSV file {file_path}: {e}")
             return [], {}
 
-        row = rows[0]
+        if not rows_by_quote:
+            logger.warning(f"No valid rows found in {file_path}")
+            return [], {}
 
-        # Ensure row is long enough
-        expected = TSV_ITEM_BASE + (TSV_ITEM_COUNT * TSV_ITEM_FIELDS)
-        while len(row) < expected:
-            row.append('')
+        # Use the first quote number found (file contains one quote, possibly multi-page)
+        quote_number = next(iter(rows_by_quote))
+        all_rows = rows_by_quote[quote_number]
 
-        def col(i):
-            return row[i].strip() if i < len(row) else ''
-
-        def to_float(val):
+        # Sort by page number, use page 1 row for header data
+        def page_num(row):
             try:
-                return float(val) if val else 0
-            except ValueError:
-                return 0
+                return int(row[H_PAGE_NUM]) if len(row) > H_PAGE_NUM and row[H_PAGE_NUM].isdigit() else 999
+            except (ValueError, IndexError):
+                return 999
+
+        all_rows.sort(key=page_num)
+        hdr = all_rows[0]
+
+        # Build bill-to address from bill_1 through bill_5
+        bill_parts = [col(hdr, H_BILL_1), col(hdr, H_BILL_2),
+                      col(hdr, H_BILL_3), col(hdr, H_BILL_4),
+                      col(hdr, H_BILL_5)]
+        bill_address = ', '.join(p for p in bill_parts if p)
+
+        # Build ship-to address from ship_1 through ship_3
+        ship_parts = [col(hdr, H_SHIP_1), col(hdr, H_SHIP_2), col(hdr, H_SHIP_3)]
+        ship_address = ', '.join(p for p in ship_parts if p)
 
         metadata = {
             'quote_info': {
-                'quote_number':      col(TSV_HEADER['quote_number']),
-                'date':              col(TSV_HEADER['quote_date']),
-                'purchase_order_ref': col(TSV_HEADER['cust_po']),
-                'terms':             col(TSV_HEADER['terms']),
-                'ship_via':          col(TSV_HEADER['ship_via']),
-                'sold_by':           col(TSV_HEADER['salesperson']),
+                'quote_number':    col(hdr, H_QUOTE_NUM),
+                'date':            col(hdr, H_QUOTE_DATE),
+                'purchase_order_ref': col(hdr, H_CUST_PO),
+                'terms':           col(hdr, H_TERMS),
+                'ship_via':        col(hdr, H_SHIP_VIA),
+                'sold_by':         col(hdr, H_SALESPERSON),
+                'profit_center':   col(hdr, H_PROFIT_CTR),
+                'invoice_number':  col(hdr, H_INVOICE_NUM),
+                'status':          col(hdr, H_STATUS),
+                'tax_code':        col(hdr, H_TAX_CODE),
             },
             'customer': {
                 'bill_to': {
-                    'name':         col(TSV_HEADER['company_name']),
-                    'organization': col(TSV_HEADER['bill_contact']),
-                    'address':      ', '.join(filter(None, [
-                        col(TSV_HEADER['bill_addr1']),
-                        col(TSV_HEADER['bill_addr2']),
-                        col(TSV_HEADER['bill_city']),
-                        col(TSV_HEADER['bill_state']),
-                        col(TSV_HEADER['bill_zip']),
-                    ])),
-                }
+                    'name':         col(hdr, H_BILL_CONTACT),
+                    'organization': col(hdr, H_COMPANY),
+                    'address':      bill_address,
+                    'email':        col(hdr, H_ECOM_EMAIL),
+                },
+                'ship_to': {
+                    'name':         col(hdr, H_SHIP_CONTACT),
+                    'organization': col(hdr, H_SHIP_COMPANY),
+                    'address':      ship_address,
+                },
             },
             'financial_summary': {
-                'sub_total':    to_float(col(TSV_HEADER['subtotal'])),
-                'tax_amount':   to_float(col(TSV_HEADER['tax'])),
-                'shipping':     0,
-                'total_amount': to_float(col(TSV_HEADER['total'])),
+                'sub_total':    to_float(col(hdr, H_SUBTOTAL)),
+                'tax_amount':   to_float(col(hdr, H_TAX)),
+                'freight_in':   to_float(col(hdr, H_FREIGHT_IN)),
+                'freight_out':  to_float(col(hdr, H_FREIGHT_OUT)),
+                'total_amount': to_float(col(hdr, H_TOTAL)),
             },
         }
 
+        # Collect line items across all pages
         line_items = []
-        for i in range(TSV_ITEM_COUNT):
-            base = TSV_ITEM_BASE + (i * TSV_ITEM_FIELDS)
-            item_num  = col(base)
-            qty       = col(base + 1)
-            price     = col(base + 2)
-            ext       = col(base + 3)
-            desc      = col(base + 4)
-            new_desc  = col(base + 5)
+        seen_items = set()  # deduplicate across pages
 
-            if not item_num:
+        for row in all_rows:
+            # Find all delimiter positions in this row
+            delim_positions = [j for j, v in enumerate(row) if v == DELIM]
+            if not delim_positions:
                 continue
 
-            line_items.append({
-                'qty':             qty,
-                'part_id':         item_num,
-                'description':     new_desc or desc,
-                'price_each':      price,
-                'price_extended':  ext,
-            })
+            # Determine block size from spacing between delimiters
+            if len(delim_positions) > 1:
+                block_size = delim_positions[1] - delim_positions[0]
+            else:
+                block_size = 11  # default
 
-        return line_items, metadata
+            for pos in delim_positions:
+                fields = row[pos:pos + block_size]
 
-    def _fix_json_file(self, file_path: Path) -> bool:
-        """
-        Run fix_filepro_json.sh to fix malformed JSON before processing.
-        Returns True if fix was successful or script not configured.
-        """
-        fix_script = CONFIG.get('json_fix_script')
-        if not fix_script or not Path(fix_script).exists():
-            logger.debug("JSON fix script not configured or not found, skipping")
-            return True
-
-        try:
-            logger.info(f"Running JSON fix script on: {file_path}")
-            result = subprocess.run(
-                [fix_script, str(file_path)],
-                capture_output=True,
-                text=True,
-                timeout=30
-            )
-
-            if result.returncode != 0:
-                logger.error(f"JSON fix script failed: {result.stderr}")
-                return False
-
-            logger.info(f"JSON fix script completed: {result.stdout.strip()}")
-            return True
-
-        except subprocess.TimeoutExpired:
-            logger.error(f"JSON fix script timed out for {file_path}")
-            return False
-        except Exception as e:
-            logger.error(f"Error running JSON fix script: {e}")
-            return False
-
-    def _parse_filepro_json(self, file_path: Path) -> tuple[List[Dict], Dict[str, Any]]:
-        """
-        Parse FilePro JSON format which has malformed structure:
-        - Line items are loose objects between entry_details and totals (not in array)
-        - Missing commas in totals section
-        Returns (line_items, metadata_dict)
-        """
-        with open(file_path, 'r') as f:
-            content = f.read()
-
-        # Extract the structured sections using regex
-        metadata = {}
-
-        # Parse meta section
-        meta_match = re.search(r'"meta"\s*:\s*(\{[^}]+\})', content, re.DOTALL)
-        if meta_match:
-            try:
-                metadata['meta'] = json.loads(meta_match.group(1))
-            except json.JSONDecodeError:
-                metadata['meta'] = {}
-
-        # Parse invoiced_to section
-        invoiced_match = re.search(r'"invoiced_to"\s*:\s*(\{[^}]+\})', content, re.DOTALL)
-        if invoiced_match:
-            try:
-                metadata['invoiced_to'] = json.loads(invoiced_match.group(1))
-            except json.JSONDecodeError:
-                metadata['invoiced_to'] = {}
-
-        # Parse ship_to section
-        ship_match = re.search(r'"ship_to"\s*:\s*(\{[^}]+\})', content, re.DOTALL)
-        if ship_match:
-            try:
-                metadata['ship_to'] = json.loads(ship_match.group(1))
-            except json.JSONDecodeError:
-                metadata['ship_to'] = {}
-
-        # Parse quote_details section
-        quote_details_match = re.search(r'"quote_details"\s*:\s*(\{[^}]+\})', content, re.DOTALL)
-        if quote_details_match:
-            try:
-                metadata['quote_details'] = json.loads(quote_details_match.group(1))
-            except json.JSONDecodeError:
-                metadata['quote_details'] = {}
-
-        # Parse entry_details section
-        entry_match = re.search(r'"entry_details"\s*:\s*(\{[^}]+\})', content, re.DOTALL)
-        if entry_match:
-            try:
-                metadata['entry_details'] = json.loads(entry_match.group(1))
-            except json.JSONDecodeError:
-                metadata['entry_details'] = {}
-
-        # Parse totals section (fix malformed JSON - missing commas, empty values)
-        totals_match = re.search(r'"totals"\s*:\s*\{([^}]+)\}', content, re.DOTALL)
-        if totals_match:
-            totals_content = totals_match.group(1)
-            metadata['totals'] = {}
-            # Match key-value pairs, handling keys with colons and numeric/null values
-            # Pattern: "Key Name:" or "Key Name" followed by optional whitespace and value
-            for match in re.finditer(r'"([^"]+)"\s*:\s*([-\d.]+|null)?', totals_content):
-                key = match.group(1).strip().rstrip(':')
-                val = match.group(2)
-                if val is None or val == 'null' or val.strip() == '':
-                    metadata['totals'][key] = None
-                else:
+                def f(offset, default=''):
                     try:
-                        metadata['totals'][key] = float(val.strip())
-                    except ValueError:
-                        metadata['totals'][key] = None
+                        return fields[offset].strip() if offset < len(fields) and fields[offset] else default
+                    except IndexError:
+                        return default
 
-        # Extract line items - they're loose objects with "type": "line"
-        line_items = []
-        # Match all objects that have qty, part_id, description pattern
-        item_pattern = re.compile(
-            r'\{\s*"qty"\s*:\s*"([^"]*)"\s*,\s*'
-            r'"part_id"\s*:\s*"([^"]*)"\s*,\s*'
-            r'"description"\s*:\s*"([^"]*)"\s*,\s*'
-            r'"price_each"\s*:\s*"([^"]*)"\s*,\s*'
-            r'"price_extended"\s*:\s*"([^"]*)"\s*,\s*'
-            r'"type"\s*:\s*"([^"]*)"\s*\}',
-            re.DOTALL
-        )
+                item_num = f(ITEM_NUM)
 
-        for match in item_pattern.finditer(content):
-            qty_str = match.group(1).strip()
-            price_each_str = match.group(4).strip()
-            price_ext_str = match.group(5).strip()
+                # Skip empty blocks
+                if not item_num:
+                    continue
 
-            line_items.append({
-                'qty': int(qty_str) if qty_str.isdigit() else (float(qty_str) if qty_str else ''),
-                'part_id': match.group(2).strip(),
-                'description': match.group(3).strip(),
-                'price_each': float(price_each_str) if price_each_str and price_each_str.replace('-', '').replace('.', '').isdigit() else '',
-                'price_extended': float(price_ext_str) if price_ext_str and price_ext_str.replace('-', '').replace('.', '').isdigit() else '',
-                'type': match.group(6).strip()
-            })
+                # Deduplicate (same item can appear on multiple pages)
+                dedup_key = f"{item_num}|{f(ITEM_QTY)}|{f(ITEM_PRICE)}"
+                if dedup_key in seen_items:
+                    continue
+                seen_items.add(dedup_key)
 
+                # Determine item type
+                item_type = 'service' if item_num.startswith('#') else 'product'
+
+                # Description: prefer new_inv_desc, fall back to description
+                new_inv = f(ITEM_NEWDESC)
+                desc    = f(ITEM_DESC)
+                display_desc = new_inv if new_inv else desc
+
+                line_items.append({
+                    'part_id':        item_num,
+                    'type':           item_type,
+                    'qty':            f(ITEM_QTY),
+                    'price_each':     to_float(f(ITEM_PRICE)),
+                    'total':          to_float(f(ITEM_TOTAL)),
+                    'shipped':        f(ITEM_SHIPPED),
+                    'qty_to_ship':    f(ITEM_QSHIP),
+                    'discount':       to_float(f(ITEM_QSHIP)),
+                    'description':    display_desc,
+                    'short_desc':     desc,
+                    'cost':           to_float(f(ITEM_COST)),
+                    'price_extended':      to_float(f(ITEM_EXT)),
+                })
+
+        logger.info(f"Parsed quote {quote_number}: {len(line_items)} line items across {len(all_rows)} page(s)")
         return line_items, metadata
+
 
     def _convert_filepro_metadata(self, fp_metadata: Dict[str, Any]) -> Dict[str, Any]:
         """Convert FilePro metadata structure to the format expected by GoogleSheetsClient"""
@@ -610,11 +635,9 @@ class QuotationProcessor:
             logger.info(f"Wrote JSON: {json_path}")
 
             # Sync to Google Sheets
-            success, sheet_url = self.sheets_client.create_or_update_sheet(
-                quote_number,
-                data,
-                metadata=metadata
-            )
+            # Apps Script creates the new sheet and returns its URL
+            sheet_url = call_webhook(quote_number, json_data)
+            success = bool(sheet_url)
 
             if success and sheet_url:
                 logger.info(f"SYNCED | Quote {quote_number} | {sheet_url}")
@@ -623,7 +646,6 @@ class QuotationProcessor:
                     f.write(f"{datetime.now().isoformat()} | Quote {quote_number} | {sheet_url}\n")
                 print(f"  Quote {quote_number} synced successfully", flush=True)
                 print(f"    {sheet_url}", flush=True)
-                call_webhook(quote_number, sheet_url)
 
             # Archive JSON, remove TSV
             if success and CONFIG['archive_processed']:

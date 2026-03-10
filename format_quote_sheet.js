@@ -7,7 +7,8 @@
  * - All setBorder() calls use 8 parameters
  ****************************************************/
 
-var APP_VERSION = '1.1.0';
+var APP_VERSION   = '1.1.0';
+var SHEET_VERSION = '2.3';
 
 /****************************************************
  * WEB APP ENTRY POINTS
