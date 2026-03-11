@@ -66,7 +66,7 @@ $(printf '%4000s' | tr ' ' '.')
 HTML
 
 # --- Wait for sync ---
-sleep 15
+sleep 45
 URL=$(grep "SYNCED | Quote $STRING1 |" "$SYNCLOG" | tail -1 | awk -F' | ' '{print $NF}')
 
 # --- Redirect to sheet or show error ---
