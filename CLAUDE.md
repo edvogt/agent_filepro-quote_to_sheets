@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Python service that monitors a directory for FilePro quotation TSV exports and automatically creates versioned Google Sheets. Runs as a systemd service (`filepro-sync.service`) using watchdog for filesystem monitoring.
+Python service that monitors a directory for FilePro quotation TSV exports and automatically creates versioned Google Sheets via an Apps Script webhook. Runs as a systemd service (`filepro-sync.service`) using watchdog for filesystem monitoring.
 
 ## Key Commands
 
@@ -52,10 +52,8 @@ Browser → CGI (quot-edit-sheets-acct)
             ↓  watchdog (filepro_sync.py)
         _parse_tsv_file() → JSON written to disk
             ↓
-        GoogleSheetsClient.create_or_update_sheet()
-            ↓  new versioned sheet: Quote-<N>-<version>
-        _apply_formatting() (Python/gspread) → call_webhook() (Apps Script, optional)
-            ↓
+        call_webhook() → Apps Script creates new versioned sheet
+            ↓  returns sheet_url
         URL logged → JSON archived → TSV deleted
             ↓
         CGI redirects browser to sheet
@@ -63,29 +61,27 @@ Browser → CGI (quot-edit-sheets-acct)
 
 ### Three classes in `filepro_sync.py`
 
-1. **GoogleSheetsClient**: OAuth token loading/refresh, Sheets CRUD via `gspread`.
-   - `create_or_update_sheet()`: Always creates a **new** versioned sheet `Quote-{number}-{version}` — never updates existing sheets
-   - `_get_next_version()`: Scans Drive folder for existing `Quote-{number}-N` sheets, returns next version
-   - `_populate_worksheet()`: Writes header rows, line items, and financial summary in one batch update
-   - `_apply_formatting()`: Python-side formatting pass (dark blue header, light blue column headers, freeze row 4, auto-resize). The Apps Script webhook runs afterward as the final formatting pass.
+1. **GoogleSheetsClient**: OAuth token loading/refresh, Sheets CRUD via `gspread`. **Note:** `create_or_update_sheet()`, `_populate_worksheet()`, and `_apply_formatting()` are currently dead code — `process_file()` delegates sheet creation entirely to `call_webhook()` (Apps Script). The class is still instantiated in `main()` but its sheet methods are not called. Do not delete without asking.
+   - `_get_next_version()`: Scans Drive folder for existing `Quote-{number}-N` sheets, returns next version — also currently unused since Apps Script handles versioning.
 
 2. **QuotationProcessor**: TSV parsing, quote number extraction, data cleaning with pandas, coordinates sync workflow.
    - `_parse_tsv_file()`: Reads tab-delimited export using DELIMITED-ITEM-SECTION sentinels. Supports multi-row per quote (one row per page). Collects header from first row, line items across all rows.
-   - `process_file()`: Main entry point — parse TSV → write JSON → sync to Sheets → archive JSON → delete TSV. Includes a **quote number mismatch guard**: if the TSV content's quote number doesn't match the filename's quote number, the file is skipped with an error (prevents wrong-record syncs from stale FilePro tmp files).
-   - `_parse_filepro_json()`, `_convert_filepro_metadata()`, `_fix_json_file()`: **Dead code** — legacy JSON pipeline methods never called in the current TSV flow; kept for reference only. Do not delete without asking.
+   - `process_file()`: Main entry point — parse TSV → write JSON → `call_webhook()` (Apps Script creates sheet, returns URL) → log URL → archive JSON → delete TSV. Includes a **quote number mismatch guard**: if the TSV content's quote number doesn't match the filename's quote number, the file is skipped with an error (prevents wrong-record syncs from stale FilePro tmp files).
+   - `_convert_filepro_metadata()`: **Dead code** — legacy JSON pipeline method never called in the current TSV flow; kept for reference only. Do not delete without asking.
 
 3. **QuotationFileHandler**: Watchdog `FileSystemEventHandler`. Debounces file creation events (2-second delay). File is added to `self.processing` set **before** the sleep to block concurrent duplicate watchdog events for the same file.
 
-### Module-level function
+### Module-level functions
 
-- `call_webhook()`: POSTs full `json_data` dict (quote_info, customer, financial_summary, line_items) plus `sheet_url` and `timestamp` to Apps Script. Skips silently if `webhook_url` is empty string.
+- `call_webhook()`: POSTs full `json_data` dict (quote_info, customer, financial_summary, line_items) plus `quote_number` and `timestamp` to Apps Script. Includes OAuth Bearer token. Returns `sheet_url` on success, `None` on failure. Skips if `webhook_url` is empty.
+- `_get_oauth_token()`: Loads and refreshes OAuth access token from `token.pickle` for webhook Authorization header.
 
 ### Supporting files
 
 | File | Purpose |
 |---|---|
 | `stquote_to_spool.sh` | CLI export: runs `rreport stquote -f tabexport -R <N> -A` → drops TSV in `exports/` |
-| `quot-edit-sheets-acct` | Apache CGI: runs `rreport stquote -f export-tsv -R <N> -V selquote -A` → drops TSV, waits 15s, redirects to sheet |
+| `quot-edit-sheets-acct` | Apache CGI: runs `rreport stquote -f export-tsv -R <N> -V selquote -A` → drops TSV, waits 45s, redirects to sheet |
 | `createBoundScript.js` | `createBoundScript_(ssId)` — called from doPost to attach a bound script (Publish menu + Save as PDF) to each new sheet via Apps Script API |
 | `format_quote_sheet.js` | Google Apps Script web app (v1.1.0) — retired, kept for reference |
 | `setup_oauth.py` | One-time OAuth flow → `/home/filepro/credentials/token.pickle` |
@@ -93,7 +89,7 @@ Browser → CGI (quot-edit-sheets-acct)
 | `quote_url_html.sh` | Output sheet URLs as HTML links |
 | `fix_filepro_json.sh` | Legacy — unused in current TSV pipeline |
 
-**Note on rreport format names:** `stquote_to_spool.sh` uses `-f tabexport` (prc.tabexport), while the CGI uses `-f export-tsv` (prc.export-tsv with `-V selquote`). Both produce the same 83-column TSV layout but use different FilePro process files and output paths.
+**Note on rreport format names:** `stquote_to_spool.sh` uses `-f tabexport` (prc.tabexport), while the CGI uses `-f export-tsv` (prc.export-tsv with `-V selquote`). Both produce the same TSV layout but use different FilePro process files and output paths.
 
 ## CGI Script
 
@@ -105,7 +101,7 @@ Browser → CGI (quot-edit-sheets-acct)
 3. Runs `rreport stquote -f export-tsv -R "$STRING1" -V selquote -A` (stderr → `/tmp/rreport-cgi.log`) → writes to `/appl/spool/QUOTES-SHEETS-tmp.tsv`
 4. Copies tmp TSV → `$EXPORTS/QUOTE_{N}_{TS}.tsv`
 5. Outputs success message + spinner gif
-6. Sleeps 15 seconds for sync + webhook to complete
+6. Sleeps 45 seconds for sync + webhook to complete
 7. Greps `filepro_sync.log` for `SYNCED | Quote {N} |` and extracts URL
 8. Redirects browser to the Google Sheet via `window.location.href`
 
@@ -113,19 +109,19 @@ Browser → CGI (quot-edit-sheets-acct)
 
 ## Authentication
 
-1. **OAuth (main app)**: `filepro_sync.py` uses token at `/home/filepro/credentials/token.pickle`. Auto-refreshes on expiry. Re-run `setup_oauth.py` if refresh fails.
+1. **OAuth (main app)**: `filepro_sync.py` uses token at `/home/filepro/credentials/token.pickle`. Auto-refreshes on expiry. Re-run `setup_oauth.py` if refresh fails. The OAuth token is also used as a Bearer token in webhook requests.
 2. **Service Account (test_sheets.py only)**: Uses a separate service account JSON key. Do not confuse with the main app auth.
 
 ## TSV Input Format
 
-FilePro exports one-row tab-delimited files named `QUOTE_[NUMBER]_[TIMESTAMP].tsv` to the watch directory.
+FilePro exports tab-delimited files named `QUOTE_[NUMBER]_[TIMESTAMP].tsv` to the watch directory.
 
 **DELIMITED-ITEM-SECTION format** (sentinel: `DELIMITED-ITEM-SECTION`):
 
-FilePro exports one or more tab-delimited rows per quote (one row per page). The first row (lowest page number) contains header data. Line items are collected across all rows.
+FilePro exports one or more tab-delimited rows per quote (one row per page). The first row (lowest page number) contains header data. Line items are collected across all pages.
 
 | Col offset | Content |
-|----|----|---|
+|----|-----|
 | 0 | `DELIMITED-ITEM-SECTION` sentinel |
 | +1 | item_num |
 | +2 | qty_ordered |
@@ -160,8 +156,8 @@ Header constants: H_QUOTE_NUM=0, H_PAGE_NUM=1, H_INVOICE_NUM=2, H_CUST_PO=3, etc
 | Key | Default | Notes |
 |---|---|---|
 | `token_file` | `/home/filepro/credentials/token.pickle` | OAuth token |
-| `google_drive_folder_id` | `1fRcg-tMAOkt81KVbI4h56zZFI7Hu6him` | CLIENT_QUOTES folder |
-| `export_directory` | `exports/` (absolute path in code) | Watch directory for TSV files |
+| `google_drive_folder_id` | `14pprDXVW9bxL_CzTW-peWIwPdDb5tW4m` | CLIENT_QUOTES folder |
+| `export_directory` | `/home/filepro/agent_filepro-quote_to_sheets/exports` | Watch directory for TSV files |
 | `file_pattern` | `QUOTE_*.tsv` | Glob pattern for watchdog |
 | `log_file` | `filepro_sync.log` | Relative to working directory |
 | `url_log_file` | `/home/filepro/quote_urls.log` | One URL per line: `timestamp \| Quote N \| URL` |
@@ -169,7 +165,7 @@ Header constants: H_QUOTE_NUM=0, H_PAGE_NUM=1, H_INVOICE_NUM=2, H_CUST_PO=3, etc
 | `webhook_url` | Apps Script deployment URL | Set to `''` to disable. Update after each Apps Script redeployment. |
 | `webhook_timeout` | `30` | Seconds |
 
-Current webhook URL: `https://script.google.com/a/macros/ear.net/s/AKfycbz0I8yPl8tcBJCoTjJgcBbfEGiiNqxe83UizNR_Zf6EXcbP49iPuTXeKzOiycQz-1XC8Q/exec`
+Current webhook URL: `https://script.google.com/macros/s/AKfycbz0I8yPl8tcBJCoTjJgcBbfEGiiNqxe83UizNR_Zf6EXcbP49iPuTXeKzOiycQz-1XC8Q/exec`
 
 ## Webhook / Apps Script
 
@@ -188,7 +184,7 @@ Current webhook URL: `https://script.google.com/a/macros/ear.net/s/AKfycbz0I8yPl
 }
 ```
 
-**Webhook payload**: `call_webhook()` sends the full `json_data` dict (quote_info, customer, financial_summary, line_items) plus `sheet_url` and `timestamp`. The Apps Script uses this to create and format the sheet.
+**Webhook payload**: `call_webhook()` sends the full `json_data` dict (quote_info, customer, financial_summary, line_items) plus `quote_number` and `timestamp`, with OAuth Bearer token auth. The Apps Script creates and formats the sheet, returning `sheet_url` in the response JSON.
 
 **Formatting applied by the Apps Script**:
 - EAR blue (`#1a73e8`) header + column headers, Roboto font
@@ -202,7 +198,7 @@ Current webhook URL: `https://script.google.com/a/macros/ear.net/s/AKfycbz0I8yPl
 
 **Deploy**: Apps Script → Deploy → Manage deployments → Edit → set Version to "New version" → Deploy
 
-**Manual test** (GET): `curl -sL 'https://script.google.com/a/macros/ear.net/s/AKfycbz0I8yPl8tcBJCoTjJgcBbfEGiiNqxe83UizNR_Zf6EXcbP49iPuTXeKzOiycQz-1XC8Q/exec'`
+**Manual test** (GET): `curl -sL 'https://script.google.com/macros/s/AKfycbz0I8yPl8tcBJCoTjJgcBbfEGiiNqxe83UizNR_Zf6EXcbP49iPuTXeKzOiycQz-1XC8Q/exec'`
 
 ## Startup Behavior
 

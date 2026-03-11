@@ -500,14 +500,21 @@ class QuotationProcessor:
             if not delim_positions:
                 continue
 
-            # Determine block size from spacing between delimiters
-            if len(delim_positions) > 1:
-                block_size = delim_positions[1] - delim_positions[0]
-            else:
-                block_size = 11  # default
-
-            for pos in delim_positions:
-                fields = row[pos:pos + block_size]
+            for idx, pos in enumerate(delim_positions):
+                # Use actual distance to next sentinel as block boundary.
+                # Items 7 & 8 in prc.export-tsv have an extra ship-to address field
+                # (12 cols instead of 11), so a fixed block_size would corrupt them.
+                # Last item: cap at pos+12 to exclude trailing spare fields.
+                if idx + 1 < len(delim_positions):
+                    block_end = delim_positions[idx + 1]
+                else:
+                    block_end = min(len(row), pos + 12)
+                fields = row[pos:block_end]
+                # Strip trailing empty fields (spare columns at end of row)
+                while len(fields) > 1 and not fields[-1].strip():
+                    fields.pop()
+                    if len(fields) <= 11:
+                        break
 
                 def f(offset, default=''):
                     try:
@@ -530,9 +537,13 @@ class QuotationProcessor:
                 # Determine item type
                 item_type = 'service' if item_num.startswith('#') else 'product'
 
-                # Description: prefer new_inv_desc, fall back to description
-                new_inv = f(ITEM_NEWDESC)
-                desc    = f(ITEM_DESC)
+                # Use negative indexing for desc/cost/ext/new_inv_desc — these 4
+                # fields are always at the END of each block regardless of whether
+                # the block has 11 or 12 columns (items 7-8 have extra ship-to field).
+                new_inv = f(len(fields) - 1) if len(fields) > 1 else ''  # new_inv_desc (last)
+                desc    = f(len(fields) - 4) if len(fields) > 4 else ''  # description
+                cost_val = f(len(fields) - 3) if len(fields) > 3 else '' # cost
+                ext_val  = f(len(fields) - 2) if len(fields) > 2 else '' # extension
                 display_desc = new_inv if new_inv else desc
 
                 line_items.append({
@@ -546,8 +557,8 @@ class QuotationProcessor:
                     'discount':       to_float(f(ITEM_QSHIP)),
                     'description':    display_desc,
                     'short_desc':     desc,
-                    'cost':           to_float(f(ITEM_COST)),
-                    'price_extended':      to_float(f(ITEM_EXT)),
+                    'cost':           to_float(cost_val),
+                    'price_extended':      to_float(ext_val),
                 })
 
         logger.info(f"Parsed quote {quote_number}: {len(line_items)} line items across {len(all_rows)} page(s)")
