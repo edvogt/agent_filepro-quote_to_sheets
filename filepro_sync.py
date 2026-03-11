@@ -64,7 +64,7 @@ CONFIG = {
     'url_log_file': '/home/filepro/quote_urls.log',
 
     # Webhook (Google Apps Script Web App URL)
-    'webhook_url': 'https://script.google.com/a/macros/ear.net/s/AKfycbz0I8yPl8tcBJCoTjJgcBbfEGiiNqxe83UizNR_Zf6EXcbP49iPuTXeKzOiycQz-1XC8Q/exec',
+    'webhook_url': 'https://script.google.com/macros/s/AKfycbz0I8yPl8tcBJCoTjJgcBbfEGiiNqxe83UizNR_Zf6EXcbP49iPuTXeKzOiycQz-1XC8Q/exec',
     'webhook_timeout': 30  # seconds
 }
 
@@ -260,6 +260,19 @@ class GoogleSheetsClient:
             logger.warning(f"Error applying formatting: {e}")
 
 # ============================================================================
+def _get_oauth_token() -> str:
+    """Load and return current OAuth access token from token.pickle."""
+    import pickle
+    token_file = CONFIG.get('token_file', '/home/filepro/credentials/token.pickle')
+    with open(token_file, 'rb') as f:
+        creds = pickle.load(f)
+    if creds.expired and creds.refresh_token:
+        from google.auth.transport.requests import Request
+        creds.refresh(Request())
+        with open(token_file, 'wb') as f:
+            pickle.dump(creds, f)
+    return creds.token
+
 # WEBHOOK CALLER
 # ============================================================================
 def call_webhook(quote_number: str, json_data: dict) -> Optional[str]:
@@ -277,7 +290,7 @@ def call_webhook(quote_number: str, json_data: dict) -> Optional[str]:
         req = urllib.request.Request(
             CONFIG['webhook_url'],
             data=payload,
-            headers={'Content-Type': 'application/json'},
+            headers={'Content-Type': 'application/json', 'Authorization': 'Bearer ' + _get_oauth_token()},
             method='POST'
         )
 
