@@ -42,7 +42,7 @@ from watchdog.events import FileSystemEventHandler
 CONFIG = {
     # Google Authentication (OAuth)
     'token_file': '/home/filepro/credentials/token.pickle',
-    'google_drive_folder_id': '1fRcg-tMAOkt81KVbI4h56zZFI7Hu6him',  # CLIENT_QUOTES folder
+    'google_drive_folder_id': '14pprDXVW9bxL_CzTW-peWIwPdDb5tW4m',  # CLIENT_QUOTES folder
     
     # FilePro Export Settings
     # $SPOOL = /appl/spool
@@ -64,7 +64,7 @@ CONFIG = {
     'url_log_file': '/home/filepro/quote_urls.log',
 
     # Webhook (Google Apps Script Web App URL)
-    'webhook_url': 'https://script.google.com/macros/s/AKfycbxkC58mywofLZ0jqsPAawrVv_SCf0thQqKNZswSfpZ4TVRAjQFWQyxMgHyWhUlFe4DMhw/exec',
+    'webhook_url': 'https://script.google.com/macros/s/AKfycbzfEDCBzNmyIv6rsBKS5qitfJzwUP77jCe3eJP5fg8bQVQZV0MHNoxw9juN6_bDnhiVSw/exec',
     'webhook_timeout': 30  # seconds
 }
 
