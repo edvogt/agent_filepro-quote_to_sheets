@@ -169,13 +169,13 @@ Header constants: H_QUOTE_NUM=0, H_PAGE_NUM=1, H_INVOICE_NUM=2, H_CUST_PO=3, etc
 | `webhook_url` | Apps Script deployment URL | Set to `''` to disable. Update after each Apps Script redeployment. |
 | `webhook_timeout` | `30` | Seconds |
 
-Current webhook URL: `https://script.google.com/macros/s/AKfycbzlBVpK45Ezvhfmg0_zPnsLT5PhWAxErV54eCElc5JiBZ2RCVnnoRDS1-VXDtgl9_9g_g/exec`
+Current webhook URL: `https://script.google.com/a/macros/ear.net/s/AKfycbz0I8yPl8tcBJCoTjJgcBbfEGiiNqxe83UizNR_Zf6EXcbP49iPuTXeKzOiycQz-1XC8Q/exec`
 
 ## Webhook / Apps Script
 
 **Current endpoint**: "Filepro Quote Publish 01" v8.5.0, deployed as Version 11 ("add publish to pdf option").
 - Script ID: `1LR2sMsnUebMVG0VL63rbRwwGO3Fc6rDyJiPN0I2_8SSs7407qy6QbWp4`
-- Deployment ID: `AKfycbzlBVpK45Ezvhfmg0_zPnsLT5PhWAxErV54eCElc5JiBZ2RCVnnoRDS1-VXDtgl9_9g_g`
+- Deployment ID: `AKfycbz0I8yPl8tcBJCoTjJgcBbfEGiiNqxe83UizNR_Zf6EXcbP49iPuTXeKzOiycQz-1XC8Q`
 - Execute as: `dev@ear.net` | Access: Anyone
 
 **The endpoint requires a full quote payload** — there is no format-only mode. Expected POST body:
@@ -202,7 +202,7 @@ Current webhook URL: `https://script.google.com/macros/s/AKfycbzlBVpK45Ezvhfmg0_
 
 **Deploy**: Apps Script → Deploy → Manage deployments → Edit → set Version to "New version" → Deploy
 
-**Manual test** (GET): `curl -sL 'https://script.google.com/macros/s/AKfycbzlBVpK45Ezvhfmg0_zPnsLT5PhWAxErV54eCElc5JiBZ2RCVnnoRDS1-VXDtgl9_9g_g/exec'`
+**Manual test** (GET): `curl -sL 'https://script.google.com/a/macros/ear.net/s/AKfycbz0I8yPl8tcBJCoTjJgcBbfEGiiNqxe83UizNR_Zf6EXcbP49iPuTXeKzOiycQz-1XC8Q/exec'`
 
 ## Startup Behavior
 
